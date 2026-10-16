@@ -1,0 +1,640 @@
+#VRML_SIM R2025a utf8
+
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/backgrounds/protos/TexturedBackground.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/robots/rec/fabtino/protos/Fabtino.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/tables/protos/Table.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/chairs/protos/WoodenChair.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/plants/protos/PottedTree.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/floors/protos/Floor.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/apartment_structure/protos/Wall.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/humans/pedestrian/protos/Pedestrian.proto"
+EXTERNPROTO "https://raw.githubusercontent.com/cyberbotics/webots/R2025a/projects/objects/television/protos/Television.proto"
+
+WorldInfo {
+  info [
+    "Fabtino coffee shop simulation"
+    "Official Webots Fabtino with a fixed, centered, horizontal 360-degree LiDAR."
+    "SPACE or the browser toggles LiDAR acquisition without changing the robot geometry."
+  ]
+  title "Fabtino Coffee Shop Navigation"
+  basicTimeStep 16
+  contactProperties [
+    ContactProperties {
+      material1 "InteriorWheelMat"
+      coulombFriction [
+        0, 2, 0
+      ]
+      frictionRotation -0.785398 0
+      bounce 0
+      forceDependentSlip [
+        10, 0
+      ]
+      softCFM 0.0001
+    }
+    ContactProperties {
+      material1 "ExteriorWheelMat"
+      coulombFriction [
+        0, 2, 0
+      ]
+      frictionRotation 0.785398 0
+      bounce 0
+      forceDependentSlip [
+        10, 0
+      ]
+      softCFM 0.0001
+    }
+  ]
+}
+Viewpoint {
+  orientation -0.010385973432180106 -0.9994289001363688 0.03215595011929225 5.658302069207304
+  position -14.707885353827942 -0.9993352949445208 10.801863356339252
+  near 0.1
+}
+TexturedBackground {
+}
+DirectionalLight {
+  direction -0.4 -0.6 -1
+  intensity 1.6
+  castShadows TRUE
+}
+PointLight {
+  attenuation 0 0 1
+  intensity 6
+  location -5 3 3.5
+  radius 12
+}
+PointLight {
+  attenuation 0 0 1
+  intensity 6
+  location 5 3 3.5
+  radius 12
+}
+PointLight {
+  attenuation 0 0 1
+  intensity 5
+  location 0 8 3.2
+  radius 10
+}
+DEF COUNTER Solid {
+  translation 0 9.3 0.5
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.35 0.22 0.14
+        roughness 0.5
+        metalness 0.1
+      }
+      geometry Box {
+        size 14 0.7 1
+      }
+    }
+    Pose {
+      translation 0 0 0.51
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.15 0.15 0.16
+            roughness 0.2
+            metalness 0.6
+          }
+          geometry Box {
+            size 14.05 0.75 0.03
+          }
+        }
+      ]
+    }
+  ]
+  name "service_counter"
+  boundingObject Box {
+    size 14 0.7 1
+  }
+}
+DEF ESPRESSO_MACHINE Solid {
+  translation 3 9.05 1.05
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.62 0.05 0.05
+        roughness 0.3
+        metalness 0.7
+      }
+      geometry Box {
+        size 0.6 0.45 0.5
+      }
+    }
+    Pose {
+      translation -0.15 -0.24 -0.05
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.8 0.8 0.82
+            roughness 0.2
+            metalness 0.9
+          }
+          geometry Cylinder {
+            height 0.28
+            radius 0.045
+          }
+        }
+      ]
+    }
+    Pose {
+      translation 0.15 -0.24 -0.05
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.8 0.8 0.82
+            roughness 0.2
+            metalness 0.9
+          }
+          geometry Cylinder {
+            height 0.28
+            radius 0.045
+          }
+        }
+      ]
+    }
+    Pose {
+      translation 0 0.15 0.28
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.85 0.85 0.88
+            roughness 0.15
+            metalness 0.95
+          }
+          geometry Cylinder {
+            height 0.12
+            radius 0.16
+          }
+        }
+      ]
+    }
+  ]
+  name "espresso_machine"
+  boundingObject Box {
+    size 0.6 0.45 0.6
+  }
+}
+DEF PASTRY_CASE Solid {
+  translation -3 9.05 1.25
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.7 0.85 0.9
+        transparency 0.6
+        roughness 0.05
+        metalness 0
+      }
+      geometry Box {
+        size 1 0.5 0.5
+      }
+    }
+    Pose {
+      translation 0 0 -0.2
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.2 0.2 0.2
+            roughness 0.4
+            metalness 0.4
+          }
+          geometry Box {
+            size 1.02 0.52 0.06
+          }
+        }
+      ]
+    }
+  ]
+  name "pastry_display_case"
+  boundingObject Box {
+    size 1 0.5 0.5
+  }
+}
+DEF CASH_REGISTER Solid {
+  translation 0 9.05 1.1
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.1 0.1 0.1
+        roughness 0.3
+        metalness 0.3
+      }
+      geometry Box {
+        size 0.35 0.3 0.18
+      }
+    }
+  ]
+  name "cash_register"
+  boundingObject Box {
+    size 0.35 0.3 0.18
+  }
+}
+DEF BACK_SHELF Solid {
+  translation 0 9.85 1.7
+  children [
+    Shape {
+      appearance PBRAppearance {
+        baseColor 0.32 0.2 0.13
+        roughness 0.6
+        metalness 0.05
+      }
+      geometry Box {
+        size 10 0.25 1.2
+      }
+    }
+    Pose {
+      translation -3 -0.2 0.35
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.95 0.95 0.95
+            roughness 0.3
+          }
+          geometry Cylinder {
+            height 0.12
+            radius 0.05
+          }
+        }
+      ]
+    }
+    Pose {
+      translation -2.6 -0.2 0.35
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.95 0.95 0.95
+            roughness 0.3
+          }
+          geometry Cylinder {
+            height 0.12
+            radius 0.05
+          }
+        }
+      ]
+    }
+    Pose {
+      translation -2.2 -0.2 0.35
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.95 0.95 0.95
+            roughness 0.3
+          }
+          geometry Cylinder {
+            height 0.12
+            radius 0.05
+          }
+        }
+      ]
+    }
+    Pose {
+      translation 2.2 -0.2 -0.1
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.55 0.35 0.2
+            roughness 0.5
+          }
+          geometry Box {
+            size 1.4 0.2 0.15
+          }
+        }
+      ]
+    }
+  ]
+  name "back_shelf"
+  boundingObject Box {
+    size 10 0.25 1.2
+  }
+}
+Table {
+  translation -5 -5 0
+  name "cafe_table_1"
+  size 0.9 0.9 0.74
+}
+WoodenChair {
+  translation -5 -5.75 0
+  rotation 0 0 1 1.5708
+  name "chair_1a"
+}
+WoodenChair {
+  translation -5 -4.25 0
+  rotation 0 0 1 -1.5708
+  name "chair_1b"
+}
+Table {
+  translation 0 -5 0
+  name "cafe_table_2"
+  size 0.9 0.9 0.74
+}
+WoodenChair {
+  translation 0 -5.75 0
+  rotation 0 0 1 1.5708
+  name "chair_2a"
+}
+WoodenChair {
+  translation 0 -4.25 0
+  rotation 0 0 1 -1.5708
+  name "chair_2b"
+}
+Table {
+  translation 5 -5 0
+  name "cafe_table_3"
+  size 0.9 0.9 0.74
+}
+WoodenChair {
+  translation 5 -5.75 0
+  rotation 0 0 1 1.5708
+  name "chair_3a"
+}
+WoodenChair {
+  translation 11.63 -0.66 0
+  rotation 0 0 1 1.5708
+  name "chair_3a(1)"
+}
+WoodenChair {
+  translation 12.06 4.43 0
+  rotation 0 0 1 1.5708
+  name "chair_3a(2)"
+}
+WoodenChair {
+  translation 11.7 0.48 0
+  rotation 0 0 1 -1.5708
+  name "chair_3b"
+}
+WoodenChair {
+  translation 11.95 5.51 0
+  rotation 0 0 1 -1.5708
+  name "chair_3b(1)"
+}
+Table {
+  translation -5 0 0
+  name "cafe_table_4"
+  size 0.9 0.9 0.74
+}
+WoodenChair {
+  translation -5.75 0 0
+  name "chair_4a"
+}
+WoodenChair {
+  translation -4.25 0 0
+  rotation 0 0 1 3.1416
+  name "chair_4b"
+}
+Table {
+  translation 5 0 0
+  name "cafe_table_5"
+  size 0.9 0.9 0.74
+}
+Table {
+  translation 11.68 0 0
+  name "cafe_table_5(1)"
+  size 0.9 0.9 0.74
+}
+WoodenChair {
+  translation 5.75 0 0
+  name "chair_5a"
+}
+WoodenChair {
+  translation 4.25 0 0
+  rotation 0 0 1 3.1416
+  name "chair_5b"
+}
+Table {
+  translation -5 5 0
+  name "cafe_table_6"
+  size 0.9 0.9 0.74
+}
+WoodenChair {
+  translation -5 4.25 0
+  rotation 0 0 1 -1.5708
+  name "chair_6a"
+}
+WoodenChair {
+  translation -5 5.75 0
+  rotation 0 0 1 1.5708
+  name "chair_6b"
+}
+Table {
+  translation 0 5 0
+  name "cafe_table_7"
+  size 0.9 0.9 0.74
+}
+WoodenChair {
+  translation 0 4.25 0
+  rotation 0 0 1 -1.5708
+  name "chair_7a"
+}
+WoodenChair {
+  translation 0 5.75 0
+  rotation 0 0 1 1.5708
+  name "chair_7b"
+}
+Table {
+  translation 5 5 0
+  name "cafe_table_8"
+  size 0.9 0.9 0.74
+}
+Table {
+  translation 11.99 5 0
+  name "cafe_table_8(1)"
+  size 0.9 0.9 0.74
+}
+WoodenChair {
+  translation 5 4.25 0
+  rotation 0 0 1 -1.5708
+  name "chair_8a"
+}
+WoodenChair {
+  translation 5 5.75 0
+  rotation 0 0 1 1.5708
+  name "chair_8b"
+}
+PottedTree {
+  translation -8.7 8 0
+  name "potted_tree_1"
+}
+PottedTree {
+  translation 8.7 9.41 0.12
+  name "potted_tree_2"
+}
+PottedTree {
+  translation -8.7 -3 0
+  name "potted_tree_3"
+}
+PottedTree {
+  translation 8.7 -3 0
+  name "potted_tree_4"
+}
+Fabtino {
+  hidden position_0_0 569.3347868723054
+  hidden position_0_1 569.211917319833
+  hidden position_0_2 489.51453313521205
+  hidden position_0_3 489.0277341839222
+  hidden linearVelocity_0 1.4199796893876738e-14 -1.0827731304156411e-14 -2.976292610886352e-10
+  hidden angularVelocity_0 1.2574937350205583e-14 -6.43345720661906e-15 1.2209644559146605e-11
+  hidden rotation_1 0 1 0 3.969226648119874
+  hidden linearVelocity_1 -2.5593218117874943e-07 -4.840064392095951e-08 1.3544222676830743e-11
+  hidden angularVelocity_1 -5.609590825961183e-08 -4.96089973671489e-08 -3.157204979263066e-09
+  hidden rotation_2 0 1 0 3.9999853340877287
+  hidden linearVelocity_2 4.847877836435719e-08 -2.559795604097639e-07 -1.5332105308746515e-11
+  hidden angularVelocity_2 2.5684059104611893e-08 7.036221429652476e-08 2.7768788561934165e-09
+  hidden rotation_3 0 -1 0 0.4891376876004811
+  hidden linearVelocity_3 -4.847852953719652e-08 2.559796304767827e-07 -1.532727821553374e-11
+  hidden angularVelocity_3 -2.56839671523721e-08 -7.036217662216818e-08 2.7768915330697486e-09
+  hidden rotation_4 0 -1 0 0.7681031352409158
+  hidden linearVelocity_4 2.5593192290246424e-07 4.8400533677198386e-08 1.3549635405764617e-11
+  hidden angularVelocity_4 5.609587558189841e-08 4.960894474525498e-08 -3.1572064820698505e-09
+  translation -5.0306601611890205 1.1841695134955579 0.06455732882091351
+  rotation 1.0351790914252158e-08 -3.18784143888353e-09 1 -0.5983439419173386
+  controller "fabtino_webots_bridge_controller"
+  supervisor TRUE
+  bodySlot [
+    Solid {
+      translation -0.26 -2.65098e-07 -0.03
+      rotation 0 0 1 -1.5707953071795862
+      children [
+        CadShape {
+          url [
+            "pudu_axes_trays_only_EXTENDED_SUPPORTS_0.4m_FIXED.obj"
+          ]
+        }
+      ]
+    }
+    Pose {
+      translation 0 0 0.025
+      children [
+        Shape {
+          appearance PBRAppearance {
+            baseColor 0.12 0.12 0.14
+            roughness 0.35
+            metalness 0.25
+          }
+          geometry Cylinder {
+            height 0.05
+            radius 0.045
+            subdivision 32
+          }
+        }
+        Lidar {
+          name "mapping_lidar"
+          horizontalResolution 1024
+          fieldOfView 6.283185307179586
+          verticalFieldOfView 0.02
+          numberOfLayers 1
+          near 0.05
+          minRange 0.2
+          maxRange 12
+          noise 0.01
+          resolution 0.01
+        }
+        Gyro {
+          name "mapping_gyro"
+          resolution 0.001
+        }
+        Accelerometer {
+          name "mapping_accelerometer"
+          resolution 0.001
+        }
+        InertialUnit {
+          resolution 0.001
+        }
+      ]
+    }
+  ]
+}
+Floor {
+  size 21 20
+}
+Floor {
+  translation 3 0 0
+  rotation -0.7071067811865475 0 0.7071067811865475 0
+  name "floor(1)"
+  size 23 20
+}
+Television {
+  translation -10.1723 1.16418 1.86
+  window "generic_window"
+  supervisor TRUE
+}
+Television {
+  translation -10.0723 1.16418 1.9600000000000002
+  name "television(1)"
+  window "generic_window"
+  supervisor TRUE
+}
+Television {
+  translation 10.5777 5.10418 2.06
+  name "television(2)"
+  window "generic_window"
+  supervisor TRUE
+}
+Television {
+  translation 10.6177 0.14418 2.16
+  name "television(5)"
+  window "generic_window"
+  supervisor TRUE
+}
+Television {
+  translation -9.8723 6.15418 2.16
+  name "television(3)"
+  window "generic_window"
+  supervisor TRUE
+}
+Television {
+  translation -9.7723 -4.99582 2.26
+  name "television(4)"
+  window "generic_window"
+  supervisor TRUE
+}
+Pedestrian {
+  translation -1 0 1.27
+}
+Pedestrian {
+  translation 3.45 -7.17 1.27
+  name "wannes"
+  controllerArgs [
+    "   --trajectory=3.45 -7.17, 3.45 -3"
+    "   --speed=0.5"
+  ]
+  skinColor 0 0 0
+}
+Wall {
+  translation -10.26 0.03 0
+  size 0.2 20.5 3.1
+}
+Wall {
+  translation 10.5 -1.35 0
+  name "wall(3)"
+  size 0.1 17.8 3.1
+}
+Wall {
+  translation 14.48 -0.02 0
+  name "wall(4)"
+  size 0.1 20.2 1.6
+}
+Wall {
+  translation 0.09997 -10.2 0
+  rotation 0 0 1 -1.5707996938995747
+  name "wall(5)"
+  size 0.2 21 3.1
+}
+Wall {
+  translation 12.47 10.15 0
+  rotation 0 0 1 -1.5707996938995747
+  name "wall(6)"
+  size 0.2 4.1 3.1
+}
+Wall {
+  translation 12.54 -9.99 0
+  rotation 0 0 1 -1.5707996938995747
+  name "wall(1)"
+  size 0.2 4 1.6
+}
+Wall {
+  translation -0.020028 10.09 1.95658e-08
+  rotation 2.87693e-08 -2.87694e-08 1 -1.5707953071795862
+  name "wall(2)"
+  size 0.1 21 3.1
+}
