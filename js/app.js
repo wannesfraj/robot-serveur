@@ -5,7 +5,7 @@ import { GridRenderer } from "./grid-renderer.js?v=delivery-v8";
 import { ThreeDRenderer } from "./three-renderer.js?v=delivery-v8";
 import { MapExporter, readPNGMetadata, validateBundle, validateNavigation } from "./map-exporter.js?v=delivery-v8";
 import { createNavigationFeatures } from "./navigation-features.js?v=delivery-v8";
-import { UIController } from "./ui-controller.js?v=battery-v1";
+import { UIController } from "./ui-controller.js?v=battery-v2";
 
 const $ = UIController.$;
 let MAX_LINEAR = 0.50;

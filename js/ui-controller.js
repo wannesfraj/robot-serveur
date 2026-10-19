@@ -74,6 +74,32 @@ export const UIController = (() => {
     else { note.textContent = `Seuil de refus : ${reserve.toFixed(0)} %`; note.className = ""; }
   }
 
+  function rebaseBatteryEstimate(estimate, soc, reserve, warningPct) {
+    if (!estimate || !Number.isFinite(Number(estimate.distance_m))) return estimate;
+    const reportedAfter = estimate.soc_after_pct === null || estimate.soc_after_pct === undefined
+      ? NaN : Number(estimate.soc_after_pct);
+    const reportedSoc = estimate.soc_pct === null || estimate.soc_pct === undefined
+      ? NaN : Number(estimate.soc_pct);
+    const reportedUse = estimate.required_pct === null || estimate.required_pct === undefined
+      ? NaN : Number(estimate.required_pct);
+    const consumption = Number.isFinite(reportedUse)
+      ? reportedUse
+      : (Number.isFinite(reportedSoc) && Number.isFinite(reportedAfter)
+        ? reportedSoc - reportedAfter : NaN);
+    if (!Number.isFinite(consumption) || consumption < 0) return estimate;
+
+    const arrival = soc - consumption;
+    const accepted = arrival >= reserve;
+    return {
+      ...estimate,
+      soc_pct: soc,
+      required_pct: consumption,
+      soc_after_pct: arrival,
+      accepted,
+      warning: accepted && arrival <= warningPct
+    };
+  }
+
   function updateBattery(battery, estimate = null, navigation = null) {
     updateBatteryIndicator(battery);
     if (!battery || !Number.isFinite(Number(battery.soc_pct))) return;
@@ -91,6 +117,10 @@ export const UIController = (() => {
       note.className = "";
     }
 
+    const activeStates = new Set(["goal_active", "planning", "path_ready", "following", "aligning", "approaching", "braking", "settling", "turning_to_path", "recovering", "waiting_for_route", "battery_returning"]);
+    const deliveryState = navigation?.delivery?.state;
+    const activeDelivery = ["planning", "approaching", "waiting", "returning"].includes(deliveryState);
+    const busy = activeDelivery || activeStates.has(navigation?.state);
     const test = $("batteryTest");
     const simulated = battery.simulated === true;
     test.hidden = !simulated;
@@ -108,10 +138,6 @@ export const UIController = (() => {
         $("batteryTestStatus").className = "";
         batteryTestPendingPct = null;
       }
-      const activeStates = new Set(["goal_active", "planning", "path_ready", "following", "aligning", "approaching", "braking", "settling", "turning_to_path", "recovering", "waiting_for_route", "battery_returning"]);
-      const deliveryState = navigation?.delivery?.state;
-      const activeDelivery = ["planning", "approaching", "waiting", "returning"].includes(deliveryState);
-      const busy = activeDelivery || activeStates.has(navigation?.state);
       slider.disabled = busy;
       $("applyBatteryTest").disabled = busy || batteryTestPendingPct !== null;
       if (batteryTestPendingPct !== null) slider.disabled = true;
@@ -122,23 +148,33 @@ export const UIController = (() => {
     }
 
     const forecast = $("batteryEstimate");
-    if (!estimate) {
-      forecast.textContent = "L’estimation complète s’affiche avant le départ.";
+    const currentEstimate = estimate && !busy
+      ? rebaseBatteryEstimate(estimate, soc, reserve,
+          Number(battery.config?.warning_pct ?? 20))
+      : estimate;
+    if (!currentEstimate) {
+      forecast.textContent = "L\u2019estimation compl\u00e8te s\u2019affiche avant le d\u00e9part.";
       forecast.className = "";
-    } else if (estimate.accepted === false) {
-      forecast.textContent = estimate.reason || "Mission refusée : batterie insuffisante.";
-      forecast.className = "error";
-    } else if (estimate.soc_after_pct !== null && estimate.soc_after_pct !== undefined
-      && Number.isFinite(Number(estimate.distance_m)) && Number.isFinite(Number(estimate.soc_after_pct))) {
-      const consumption = Number(estimate.required_pct ?? (Number(estimate.soc_pct) - Number(estimate.soc_after_pct)));
-      forecast.textContent = `Parcours estimé : ${Number(estimate.distance_m).toFixed(1)} m · consommation ${consumption.toFixed(1)} % · arrivée ${Number(estimate.soc_after_pct).toFixed(1)} %.`;
-      if (estimate.warning) {
-        forecast.textContent += " Attention : rechargez après cette mission.";
+    } else if (currentEstimate.soc_after_pct !== null && currentEstimate.soc_after_pct !== undefined
+      && Number.isFinite(Number(currentEstimate.distance_m))
+      && Number.isFinite(Number(currentEstimate.soc_after_pct))) {
+      const consumption = Number(currentEstimate.required_pct ??
+        (Number(currentEstimate.soc_pct) - Number(currentEstimate.soc_after_pct)));
+      const arrival = Number(currentEstimate.soc_after_pct);
+      forecast.textContent = `Parcours estim\u00e9 : ${Number(currentEstimate.distance_m).toFixed(1)} m \u00b7 consommation ${consumption.toFixed(1)} % \u00b7 arriv\u00e9e ${arrival.toFixed(1)} %.`;
+      if (currentEstimate.accepted === false) {
+        forecast.textContent += ` Mission refus\u00e9e : l\u2019arriv\u00e9e pr\u00e9vue est sous le seuil de ${reserve.toFixed(0)} %.`;
+        forecast.className = "error";
+      } else if (currentEstimate.warning) {
+        forecast.textContent += " Attention : rechargez apr\u00e8s cette mission.";
         forecast.className = "warn";
       } else forecast.className = "";
+    } else if (currentEstimate.accepted === false) {
+      forecast.textContent = currentEstimate.reason || "Mission refus\u00e9e : batterie insuffisante.";
+      forecast.className = "error";
     } else {
-      forecast.textContent = estimate.reason || "Estimation de batterie indisponible.";
-      forecast.className = estimate.reason ? "error" : "";
+      forecast.textContent = currentEstimate.reason || "Estimation de batterie indisponible.";
+      forecast.className = currentEstimate.reason ? "error" : "";
     }
   }
 
