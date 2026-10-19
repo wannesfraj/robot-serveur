@@ -37,17 +37,26 @@ class LocalPlannerNode(Node):
         # Obstacle recovery: wait, then (if still there) back off / rotate and let A* replan.
         recovery_defaults=dict(recovery_wait_s=3.5,recovery_move_speed_mps=0.10,recovery_rotate_rps=0.45,
                                recovery_clear_margin_m=0.30,recovery_max_move_m=0.50,
-                               recovery_replan_timeout_s=10.0)
+                               recovery_replan_timeout_s=10.0,
+                               # [FIX] nouvelle logique "se placer dans une zone libre"
+                               recovery_turn_margin_m=0.10,     # marge au-dela de rotation_clearance pour pouvoir pivoter
+                               recovery_max_escape_m=1.5,       # recul max apres plusieurs echecs au meme endroit
+                               recovery_max_attempts=6,         # 0 = reessayer indefiniment
+                               recovery_no_route_s=5.0)         # pas de route A* apres un obstacle -> on se deplace
         for name,default in recovery_defaults.items():self.declare_parameter(name,default)
         self.declare_parameter('recovery_enabled',True)
         self.safety_status={}
+        self.no_route_since=None
         self.recovery=ObstacleRecovery(
             wait_s=float(self.get_parameter('recovery_wait_s').value),
             move_speed_mps=float(self.get_parameter('recovery_move_speed_mps').value),
             rotate_rps=float(self.get_parameter('recovery_rotate_rps').value),
             clear_margin_m=float(self.get_parameter('recovery_clear_margin_m').value),
             max_move_m=float(self.get_parameter('recovery_max_move_m').value),
-            replan_timeout_s=float(self.get_parameter('recovery_replan_timeout_s').value))
+            replan_timeout_s=float(self.get_parameter('recovery_replan_timeout_s').value),
+            turn_margin_m=float(self.get_parameter('recovery_turn_margin_m').value),
+            max_escape_m=float(self.get_parameter('recovery_max_escape_m').value),
+            max_attempts=int(self.get_parameter('recovery_max_attempts').value))
         self.create_subscription(String,'/fabtino/safety_status',self.safety_cb,20)
         self.last_status = None
         self.last_status_time = -math.inf
@@ -124,6 +133,8 @@ class LocalPlannerNode(Node):
             return c.command(self.pose, seconds, velocity=self.velocity)
         # Only recover while driving along a route; final alignment/settling is left alone.
         driving = c.goal is not None and c.state in ('following', 'approaching', 'turning_to_path')
+        self.recovery.goal_distance = (None if c.goal is None or self.pose is None
+                                       else math.hypot(c.goal.x-self.pose[0], c.goal.y-self.pose[1]))
         override = self.recovery.update(seconds, self.pose, self.safety_status,
                                         driving or self.recovery.active, path_ready=bool(c.path))
         if self.recovery.failure:
@@ -139,6 +150,26 @@ class LocalPlannerNode(Node):
             c.settled_since = None
         if override is not None:
             return override
+        # [FIX] Apres un obstacle, si A* ne trouve aucune route depuis la position
+        # actuelle (robot coince dans la zone gonflee de l'obstacle), on ne reste
+        # pas immobile pour toujours : on se deplace vers une autre zone et on
+        # redemande un chemin.
+        waiting = (c.goal is not None and c.state == 'waiting_for_path' and not c.path
+                   and not self.recovery.active and self.recovery.encountered_obstacle)
+        if not waiting:
+            self.no_route_since = None
+        else:
+            if self.no_route_since is None:
+                self.no_route_since = seconds
+            elif seconds-self.no_route_since >= float(self.get_parameter('recovery_no_route_s').value):
+                self.no_route_since = None
+                escape = self.recovery.force_escape(seconds, self.pose, self.safety_status)
+                if self.recovery.failure:
+                    reason = self.recovery.failure
+                    self.recovery.reset()
+                    return c.fail(reason)
+                if escape is not None:
+                    return escape
         return c.command(self.pose, seconds, velocity=self.velocity)
 
     def control(self):

@@ -5,6 +5,7 @@ from dataclasses import replace
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
+from sensor_msgs.msg import LaserScan
 from geometry_msgs.msg import PoseStamped
 from std_msgs.msg import String
 from fabtino_core.navigation.planner import OccupancyGrid as CoreGrid, astar
@@ -38,6 +39,23 @@ class GlobalPlannerNode(Node):
         self.declare_parameter('lidar_angle_sign', -1.0)
         self.declare_parameter('transient_obstacle_ttl_s', 6.0)
         self.declare_parameter('transient_obstacle_max_distance_m', 1.2)
+        # [FIX] Memoire de la FORME de l'obstacle. Avant, A* ne recevait qu'UN point
+        # (le retour LiDAR le plus proche) pendant 6 s : il contournait ce point et
+        # renvoyait le robot dans le bord de la table -> boucle infinie.
+        # Maintenant, pendant un arret/une reprise, tous les points du scan proches
+        # sont ajoutes; un obstacle confirme STATIQUE est garde longtemps, et il est
+        # efface des que le LiDAR voit a travers (l'objet a ete deplace).
+        self.declare_parameter('obstacle_memory_range_m', 2.0)
+        self.declare_parameter('static_obstacle_ttl_s', 60.0)
+        self.declare_parameter('obstacle_memory_max_cells', 6000)
+        self.declare_parameter('obstacle_clear_tolerance_m', 0.25)
+        self.last_scan = None
+        self.local_static = False
+        # [FIX] cout doux pres des obstacles : A* garde de la distance quand il y a
+        # la place, au lieu de raser la limite du gonflage (zone ou le robot ne peut
+        # plus pivoter).
+        self.declare_parameter('obstacle_cost_band_m', 0.30)
+        self.declare_parameter('obstacle_cost_weight', 3.0)
         self.battery = None
         self.battery_stamp = None
         self.battery_refused = None
@@ -69,6 +87,7 @@ class GlobalPlannerNode(Node):
         self.create_subscription(String, '/navigation/goal', self.goal_cb, 10)
         self.create_subscription(String, '/navigation/local_status', self.local_cb, 10)
         self.create_subscription(String, '/fabtino/safety_status', self.safety_cb, 20)
+        self.create_subscription(LaserScan, '/fabtino/scan', self.scan_cb, 5)
         self.create_timer(0.1, self.plan)
 
     def map_cb(self, msg, navigation=False):
@@ -119,7 +138,55 @@ class GlobalPlannerNode(Node):
             if math.isfinite(distance) and math.isfinite(angle) and distance>0.0:
                 self.remember_obstacle(distance,angle)
 
-    def remember_obstacle(self, distance, angle):
+    def scan_cb(self, msg):
+        self.last_scan = msg
+        if self.pose is None or self.pose_yaw is None:
+            return
+        self.clear_seen_through(msg)
+        if self.goal is None or not (self.local_recovering or self.local_static):
+            return
+        # Robot arrete devant un obstacle : memoriser TOUT ce que le LiDAR voit pres de lui.
+        ttl = (float(self.get_parameter('static_obstacle_ttl_s').value) if self.local_static
+               else float(self.get_parameter('transient_obstacle_ttl_s').value))
+        reach = float(self.get_parameter('obstacle_memory_range_m').value)
+        rmin = float(getattr(msg, 'range_min', 0.0))
+        for i, d in enumerate(msg.ranges):
+            if not math.isfinite(d) or d <= 0.0 or d < rmin or d > reach:
+                continue
+            self.remember_obstacle(d, msg.angle_min+i*msg.angle_increment, ttl)
+
+    def clear_seen_through(self, msg):
+        """Forget remembered cells the LiDAR now sees through (obstacle moved away)."""
+        if not self.transient_obstacles or not msg.ranges or not msg.angle_increment:
+            return
+        sign = -1.0 if float(self.get_parameter('lidar_angle_sign').value) < 0 else 1.0
+        tol = float(self.get_parameter('obstacle_clear_tolerance_m').value)
+        rmin = float(getattr(msg, 'range_min', 0.0))
+        rmax = min(float(getattr(msg, 'range_max', 12.0)), 4.0)
+        n = len(msg.ranges)
+        c, s_ = math.cos(self.pose_yaw), math.sin(self.pose_yaw)
+        gone = []
+        for cell, (wx, wy, _expiry) in self.transient_obstacles.items():
+            dx, dy = wx-self.pose[0], wy-self.pose[1]
+            xr, yr = c*dx+s_*dy, -s_*dx+c*dy          # robot frame
+            dist = math.hypot(xr, yr)
+            if dist < max(rmin, 0.3) or dist > rmax:
+                continue
+            raw = sign*math.atan2(yr, xr)              # angle in the scan's own convention
+            centre = int(round((raw-msg.angle_min)/msg.angle_increment))
+            free = True
+            for k in (-1, 0, 1):
+                d = msg.ranges[(centre+k) % n]
+                hit = math.isfinite(d) and d > 0.0 and d >= rmin
+                if hit and d <= dist+tol:
+                    free = False
+                    break
+            if free:
+                gone.append(cell)
+        for cell in gone:
+            self.transient_obstacles.pop(cell, None)
+
+    def remember_obstacle(self, distance, angle, ttl=None):
         world=lidar_return_to_world(
             (self.pose[0],self.pose[1],self.pose_yaw),distance,angle,
             float(self.get_parameter('lidar_angle_sign').value))
@@ -131,9 +198,17 @@ class GlobalPlannerNode(Node):
             cell=(int(math.floor((world[0]+radius)/resolution)),
                   int(math.floor((world[1]+radius)/resolution)))
         if cell is None:return
-        ttl=float(self.get_parameter('transient_obstacle_ttl_s').value)
+        if ttl is None:
+            ttl=(float(self.get_parameter('static_obstacle_ttl_s').value) if self.local_static
+                 else float(self.get_parameter('transient_obstacle_ttl_s').value))
         now=self.get_clock().now().nanoseconds*1e-9
-        self.transient_obstacles[cell]=(world[0],world[1],now+max(0.5,ttl))
+        expiry=now+max(0.5,ttl)
+        previous=self.transient_obstacles.get(cell)
+        if previous is not None and previous[2]>expiry:expiry=previous[2]   # never shorten a static memory
+        if previous is None and len(self.transient_obstacles)>=int(self.get_parameter('obstacle_memory_max_cells').value):
+            oldest=min(self.transient_obstacles,key=lambda k:self.transient_obstacles[k][2])
+            self.transient_obstacles.pop(oldest,None)
+        self.transient_obstacles[cell]=(world[0],world[1],expiry)
 
     def battery_cb(self, msg):
         try:self.battery = json.loads(msg.data)
@@ -207,7 +282,12 @@ class GlobalPlannerNode(Node):
             self.goal_started_at = self.get_clock().now().nanoseconds*1e-9 if goal is not None else None
             self.return_to_base = bool(payload.get('return_to_base',False))
             self.path = []
-            self.transient_obstacles.clear()
+            # [FIX] garder les obstacles statiques confirmes pour le trajet suivant
+            # (A -> B -> base) : seuls les points courts (dynamiques) sont oublies.
+            now=self.get_clock().now().nanoseconds*1e-9
+            short=float(self.get_parameter('transient_obstacle_ttl_s').value)+1e-6
+            self.transient_obstacles={c:o for c,o in self.transient_obstacles.items()
+                                      if o[2]-now>short}
             self.last_no_path_goal = None
             self.battery_refused = self.battery_report = None
             self.battery_waiting_goal = None
@@ -221,6 +301,7 @@ class GlobalPlannerNode(Node):
         self.local_recovering = bool(
             self.goal is not None and payload.get('goal_id') == self.goal.goal_id
             and payload.get('state') == 'recovering')
+        self.local_static = bool(self.local_recovering and (payload.get('recovery') or {}).get('static'))
         if (self.goal is not None and payload.get('goal_id') == self.goal.goal_id
                 and payload.get('state') in ('goal_reached', 'goal_failed')):
             self.emit(payload['state'], payload.get('reason', ''))
@@ -288,6 +369,13 @@ class GlobalPlannerNode(Node):
         for x,y,_expiry in self.transient_obstacles.values():self.grid.set_dynamic_occupied(x,y)
         blocked = self.grid.inflated_obstacles(passage_clearance)|zone_mask(self.grid,self.zones,zone_clearance)
         if blocked[start[1],start[0]]:blocked=self.relax_start(blocked,start,zone_clearance)
+        extra_cost=None
+        band=float(self.get_parameter('obstacle_cost_band_m').value)
+        weight=float(self.get_parameter('obstacle_cost_weight').value)
+        if band>0 and weight>0:
+            near=self.grid.inflated_obstacles(passage_clearance+band*0.5)
+            far=self.grid.inflated_obstacles(passage_clearance+band)
+            extra_cost=far.astype(float)*(weight*0.4)+near.astype(float)*(weight*0.6)
         def edge_allowed(a,b):
             if not self.zones or (a!=start and b!=goal):return True
             pa=self.pose if a==start else self.grid.point(a)
@@ -295,7 +383,7 @@ class GlobalPlannerNode(Node):
             return not segment_denied(pa,pb,self.zones,zone_clearance)
         path = astar(self.grid, start, goal, blocked,
                      bool(self.get_parameter('allow_unknown').value),
-                     float(self.get_parameter('unknown_cost').value),edge_allowed)
+                     float(self.get_parameter('unknown_cost').value),edge_allowed,extra_cost)
         if path:
             # Estimate the full route, including the return to base when one is
             # configured. This is refreshed as the robot moves and the battery drains.

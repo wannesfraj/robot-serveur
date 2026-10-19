@@ -16,6 +16,20 @@ class SafetySupervisor(Node):
         self.declare_parameter('braking_deceleration_mps2',0.8)
         self.declare_parameter('braking_reaction_time_s',0.12)
         self.declare_parameter('teleop_timeout_s',0.30)
+        # [FIX] Webots publie le scan avec +angle vers la DROITE du robot (meme
+        # convention que mapping / global_planner : lidar_angle_sign=-1). Sans ce
+        # signe, gauche/droite etaient inverses et le pivot de degagement partait
+        # du cote le plus encombre.
+        self.declare_parameter('lidar_angle_sign',-1.0)
+        # [FIX] rotation_clearance_m concerne le PIVOT SUR PLACE (les coins balaient
+        # un cercle). Avant, toute commande avec omega != 0 etait bloquee des qu'un
+        # objet etait a moins de 0.52 m : le robot ne pouvait meme plus corriger son
+        # cap en longeant une chaise -> blocage. Un virage en roulant (rayon >=
+        # arc_min_radius_m) est maintenant autorise si rien n'est a moins de
+        # arc_side_clearance_m; sinon le robot peut au moins avancer tout droit
+        # (couloir avant verifie), sans braquer.
+        self.declare_parameter('arc_min_radius_m',0.6)
+        self.declare_parameter('arc_side_clearance_m',0.45)
         self.nav=None;self.teleop=None;self.last_scan=None;self.last_odom=None;self.last_nav_stamp=0.0;self.teleop_active=False;self.stop_latched=False
         self.navigation_enabled=True
         self.active_goal_id=None
@@ -65,7 +79,7 @@ class SafetySupervisor(Node):
             self.clear_motion()
 
     def loop(self):
-        out=Twist();now=self.get_clock().now().nanoseconds*1e-9;reason='ok';turn_free=False
+        out=Twist();now=self.get_clock().now().nanoseconds*1e-9;reason='ok';turn_free=False;steering_limited=False
         # Free-space report for the obstacle-recovery logic (does not affect the stop decision).
         metrics=dict(front_m=None,front_bearing_rad=None,rear_m=None,rear_bearing_rad=None,
                      left_m=None,right_m=None,nearest_m=None,nearest_bearing_rad=None)
@@ -103,12 +117,13 @@ class SafetySupervisor(Node):
             rotation_obstacle=None
             min_range=float(getattr(self.last_scan,'range_min',0.0))
             max_range=float(getattr(self.last_scan,'range_max',math.inf))
+            sign=-1.0 if float(self.get_parameter('lidar_angle_sign').value)<0 else 1.0
             for i,d in enumerate(self.last_scan.ranges):
                 # Webots uses -1.0 for a LiDAR ray with no return.  It is not
                 # an obstacle and must never trigger the forward safety stop.
                 if not math.isfinite(d) or d <= 0.0 or d<min_range or d>max_range:continue
                 a=self.last_scan.angle_min+i*self.last_scan.angle_increment
-                x,y=d*math.cos(a),d*math.sin(a)
+                x,y=d*math.cos(a),sign*d*math.sin(a)   # repere robot : +x avant, +y gauche
                 if 0<x<1.5 and abs(y)<half and (metrics['front_m'] is None or d<metrics['front_m']):
                     metrics['front_m']=d;metrics['front_bearing_rad']=a
                 if -1.5<x<0 and abs(y)<rear_half and (metrics['rear_m'] is None or d<metrics['rear_m']):
@@ -126,12 +141,21 @@ class SafetySupervisor(Node):
             turn_free=rotation_obstacle is None   # rien à moins de rotation_clearance_m : on peut pivoter
             if best is not None and cmd.linear.x>0:reason=f'front_obstacle={best:.2f}m'
             elif rear_obstacle is not None and cmd.linear.x<0:reason=f'rear_obstacle={rear_obstacle:.2f}m'
-            elif rotation_obstacle is not None and abs(cmd.angular.z)>1e-6:reason=f'rotation_obstacle={rotation_obstacle:.2f}m'
-        if reason=='ok':out.linear.x=cmd.linear.x;out.angular.z=cmd.angular.z
+            elif rotation_obstacle is not None and abs(cmd.angular.z)>1e-6:
+                v=float(cmd.linear.x);w=abs(float(cmd.angular.z))
+                arc=v>0.03 and v/w>=float(self.get_parameter('arc_min_radius_m').value)
+                if arc and rotation_obstacle>=float(self.get_parameter('arc_side_clearance_m').value):
+                    pass                                        # virage doux en roulant : autorise
+                elif v>0.03:
+                    steering_limited=True                       # avance droite seulement
+                else:
+                    reason=f'rotation_obstacle={rotation_obstacle:.2f}m'
+        if reason=='ok' and steering_limited:out.linear.x=cmd.linear.x
+        elif reason=='ok':out.linear.x=cmd.linear.x;out.angular.z=cmd.angular.z
         elif turn_free and reason.startswith(('front_obstacle','rear_obstacle')):out.angular.z=cmd.angular.z  # avance bloquée, rotation permise pour contourner
         status_payload={
             'stop_active':reason!='ok','reason':reason,'command_source':source,
-            'turn_allowed':turn_free,'output_linear_mps':out.linear.x,
+            'turn_allowed':turn_free,'steering_limited':steering_limited,'output_linear_mps':out.linear.x,
             'output_angular_rps':out.angular.z,
             'decision_age_s':(now-self.last_nav_stamp if self.last_nav_stamp else None),
             'front_stop_m':self.stopping_distance(

@@ -1,20 +1,26 @@
-"""ROS-independent obstacle recovery.
+"""ROS-independent obstacle recovery (version corrigee : "escape to a free zone").
 
-When the safety supervisor stops the robot in front of an obstacle:
+Quand le superviseur de securite arrete le robot devant un obstacle :
 
-1. WAITING   hold position for ``wait_s`` (default 3.5 s). If the obstacle leaves
-             (dynamic obstacle that walked past) the robot simply resumes.
-2. BACKING   obstacle still there -> it is treated as static. Reverse a little
-             (or move forward when the obstacle is behind it) until the safety
-             threshold is cleared by ``clear_margin_m``.
-   ROTATING  when reversing is impossible (something behind) rotate towards the
-             side with more free space until the corridor ahead is free.
-3. REPLANNING  drop the old route; the global planner (A*) is already replanning
-             every 100 ms from the *current* pose with the obstacle in the map.
-             Once a new route arrives the follower continues the mission.
+1. WAITING    on attend ``wait_s`` (3.5 s). Si l'obstacle s'en va (personne qui
+              passe) le robot reprend simplement son chemin : obstacle DYNAMIQUE.
+2. BACKING    l'obstacle est toujours la -> STATIQUE. Le robot recule jusqu'a une
+              *zone libre* : une position ou
+                * l'avant est degage (front >= front_stop + clear_margin) ET
+                * il peut PIVOTER sur place (rien a moins de
+                  rotation_clearance + turn_margin autour de lui).
+              La distance maximale de recul augmente a chaque nouvel echec au meme
+              endroit (0.5 m, 1.0 m, 1.5 m ...) pour sortir vraiment de la zone.
+   ROTATING   si le recul est impossible (obstacle derriere) on pivote vers le cote
+              le plus libre.
+3. REPLANNING l'ancien chemin est abandonne. Le planificateur global a memorise la
+              FORME COMPLETE de l'obstacle (tous les points LiDAR proches, et non
+              plus un seul point) pendant ``static_obstacle_ttl_s``; A* calcule
+              donc un vrai detour depuis la nouvelle position.
 
-The goal remains active through repeated recovery attempts. Each reverse or turn
-is bounded and checked by the safety supervisor; A* keeps looking for a route.
+Nouveau : ``max_attempts``. Si le robot echoue trop de fois au meme endroit (aucun
+passage n'existe), la mission echoue proprement avec une raison explicite au lieu
+de rester bloque indefiniment. ``max_attempts=0`` = reessayer pour toujours.
 """
 from __future__ import annotations
 
@@ -34,8 +40,9 @@ class ObstacleRecovery:
 
     def __init__(self, wait_s=3.5, debounce_s=0.4, move_speed_mps=0.10, rotate_rps=0.45,
                  clear_margin_m=0.30, max_move_m=0.50, max_rotate_rad=math.pi/2,
-                 phase_timeout_s=8.0, replan_min_s=0.5, replan_timeout_s=10.0,
-                 max_attempts=3, attempts_reset_m=1.5):
+                 phase_timeout_s=12.0, replan_min_s=0.5, replan_timeout_s=10.0,
+                 max_attempts=6, attempts_reset_m=1.5,
+                 turn_margin_m=0.10, max_escape_m=1.5):
         self.wait_s = wait_s
         self.debounce_s = debounce_s
         self.move_speed = move_speed_mps
@@ -46,8 +53,10 @@ class ObstacleRecovery:
         self.phase_timeout = phase_timeout_s
         self.replan_min = replan_min_s
         self.replan_timeout = replan_timeout_s
-        self.max_attempts = max_attempts
+        self.max_attempts = int(max_attempts)
         self.attempts_reset = attempts_reset_m
+        self.turn_margin = turn_margin_m
+        self.max_escape = max(max_move_m, max_escape_m)
         self.attempts = 0
         self.attempt_origin = None
         self.reset()
@@ -70,17 +79,28 @@ class ObstacleRecovery:
         self.reason = ''
         self.attempts = 0
         self.attempt_origin = None
+        self.origin_goal_distance = None
+        self.goal_distance = None       # updated by the local planner every cycle
+        self.escape_limit = self.max_move
+        self.static_confirmed = False
 
     @property
     def active(self):
         return self.state in (self.WAITING, self.BACKING, self.ROTATING, self.REPLANNING)
+
+    @property
+    def encountered_obstacle(self):
+        """True once this goal has met at least one static obstacle."""
+        return self.attempt_origin is not None
 
     def take_replan_request(self):
         requested, self.replan_requested = self.replan_requested, False
         return requested
 
     def snapshot(self):
-        return dict(state=self.state, kind=self.kind, attempts=self.attempts, reason=self.reason)
+        return dict(state=self.state, kind=self.kind, attempts=self.attempts, reason=self.reason,
+                    static=self.static_confirmed and self.active,
+                    escape_limit_m=round(self.escape_limit, 2))
 
     # --------------------------------------------------------------- helpers
     @staticmethod
@@ -92,14 +112,25 @@ class ObstacleRecovery:
             return 'rotation'
         return None
 
-    def _cleared(self, safety):
-        if self.kind == 'rotation':
-            nearest = safety.get('nearest_m')
-            clearance = float(safety.get('rotation_clearance_m', 0.52))
-            return nearest is None or nearest >= clearance+self.clear_margin
+    def _turn_safe(self, safety):
+        """The robot can pivot in place here (nothing inside its rotation circle + margin)."""
+        nearest = safety.get('nearest_m')
+        clearance = float(safety.get('rotation_clearance_m', 0.52))
+        return nearest is None or nearest >= clearance+self.turn_margin
+
+    def _front_clear(self, safety):
         front = safety.get('front_m')
         stop = float(safety.get('front_stop_m', 0.65))
         return front is None or front >= stop+self.clear_margin
+
+    def _cleared(self, safety):
+        # [FIX] avant : seul l'avant devait etre degage. Le robot s'arretait alors
+        # souvent a un endroit ou il ne pouvait pas pivoter (chaise / mur sur le
+        # cote a moins de rotation_clearance) -> nouveau blocage immediat.
+        # Maintenant il faut une zone ou il peut AUSSI tourner.
+        if self.kind == 'rotation':
+            return self._turn_safe(safety)
+        return self._front_clear(safety) and self._turn_safe(safety)
 
     def _fail(self, reason):
         self.failure = reason
@@ -117,8 +148,13 @@ class ObstacleRecovery:
         """Return ``None`` (let the goal follower drive) or ``(linear, angular)``."""
         safety = safety or {}
         if not goal_active:
-            if self.state != self.IDLE or self.attempts:
-                self.reset()
+            # [FIX] ne pas effacer le compteur de tentatives ici : le suiveur passe
+            # brievement par 'waiting_for_path' entre deux routes, et l'ancien
+            # reset() faisait oublier que le robot avait deja echoue a cet endroit.
+            # Le reset complet est fait par le noeud local a chaque nouveau but.
+            if self.state != self.IDLE:
+                self.state = self.IDLE
+                self.reason = ''
             return None
         if pose is None:
             return None
@@ -130,6 +166,13 @@ class ObstacleRecovery:
             return self._rotate(now, pose, safety)
         return self._replan(now, path_ready, pose, safety)
 
+    def force_escape(self, now, pose, safety):
+        """No A* route from here after an obstacle: move to another zone and retry."""
+        if pose is None or self.active:
+            return None
+        self.kind = self.kind or 'front'
+        return self._begin(now, pose, safety or {}, reason_prefix='no route from here')
+
     def _watch(self, now, pose, safety, path_ready=False):
         kind = self._blocked_kind(safety)
         # Safety reports an obstacle reason only while a motion command is
@@ -137,14 +180,10 @@ class ObstacleRecovery:
         # using the live scan distance to tell whether the obstacle is still
         # there.
         if kind is None and self.state == self.WAITING and self.kind == 'front':
-            front = safety.get('front_m')
-            stop = float(safety.get('front_stop_m', 0.65))
-            if front is not None and front < stop + self.clear_margin:
+            if not self._front_clear(safety):
                 kind = 'front'
         elif kind is None and self.state == self.WAITING and self.kind == 'rotation':
-            nearest = safety.get('nearest_m')
-            clearance = float(safety.get('rotation_clearance_m', 0.52))
-            if nearest is not None and nearest < clearance + self.clear_margin:
+            if not self._turn_safe(safety):
                 kind = 'rotation'
         if self.state == self.IDLE:
             if kind:
@@ -169,12 +208,27 @@ class ObstacleRecovery:
             self.reason = ''
         return None
 
-    def _begin(self, now, pose, safety):
-        if (self.attempt_origin is None
-                or math.hypot(pose[0]-self.attempt_origin[0], pose[1]-self.attempt_origin[1]) > self.attempts_reset):
+    def _begin(self, now, pose, safety, reason_prefix='static obstacle'):
+        # Same problem as the previous attempt -> escalate. The counter restarts
+        # only after REAL progress towards the goal: the escape manoeuvre itself
+        # moves the robot away, which must not count as progress.
+        if self.attempt_origin is None:
+            fresh = True
+        elif self.goal_distance is not None and self.origin_goal_distance is not None:
+            fresh = self.origin_goal_distance-self.goal_distance > self.attempts_reset
+        else:
+            fresh = math.hypot(pose[0]-self.attempt_origin[0], pose[1]-self.attempt_origin[1]) > self.attempts_reset
+        if fresh:
             self.attempts = 0
             self.attempt_origin = (pose[0], pose[1])
+            self.origin_goal_distance = self.goal_distance
         self.attempts += 1
+        self.static_confirmed = True
+        if self.max_attempts > 0 and self.attempts > self.max_attempts:
+            self._fail(f'obstacle_unavoidable: no route around the obstacle after {self.max_attempts} attempts')
+            return (0.0, 0.0)
+        # [FIX] recul progressif : 0.5 m, puis 1.0 m, 1.5 m ... pour quitter la zone.
+        self.escape_limit = min(self.max_escape, self.max_move*self.attempts)
         front, rear = safety.get('front_m'), safety.get('rear_m')
         rear_stop = float(safety.get('rear_stop_m', 0.65))
         front_stop = float(safety.get('front_stop_m', 0.65))
@@ -195,7 +249,8 @@ class ObstacleRecovery:
         if direction:
             self.direction = direction
             self.state = self.BACKING
-            self.reason = 'static obstacle: backing off' if direction < 0 else 'static obstacle: moving away'
+            self.reason = (f'{reason_prefix}: backing off to a free zone (<= {self.escape_limit:.1f} m)'
+                           if direction < 0 else f'{reason_prefix}: moving away to a free zone')
             return (direction*self.move_speed, 0.0)
         if turn_ok:
             return self._begin_rotation(now, pose, safety)
@@ -224,8 +279,11 @@ class ObstacleRecovery:
         elapsed = now-self.phase_started
         reason = str(safety.get('reason', ''))
         stopped = elapsed > 0.15 and reason.startswith('rear_obstacle' if self.direction < 0 else 'front_obstacle')
-        if self._cleared(safety) or moved >= self.max_move or stopped or elapsed > self.phase_timeout:
-            if not self._cleared(safety) and self.kind == 'front' and safety.get('turn_allowed', False):
+        # Free zone reached, but always move at least a little so A* starts
+        # outside the obstacle's inflation band.
+        free_zone = self._cleared(safety) and moved >= min(0.15, self.escape_limit)
+        if free_zone or moved >= self.escape_limit or stopped or elapsed > self.phase_timeout:
+            if not self._turn_safe(safety) and safety.get('turn_allowed', False) and self.kind == 'front':
                 return self._begin_rotation(now, pose, safety)
             self._start_replanning(now)
             return (0.0, 0.0)
@@ -249,8 +307,6 @@ class ObstacleRecovery:
             self.reason = ''
             return None
         if elapsed >= self.replan_timeout:
-            # A* may temporarily have no route while the map catches up, or its
-            # latest route may still meet an unmapped obstacle. Keep the goal
-            # active and make another bounded, safety-checked recovery attempt.
-            return self._begin(now, pose, safety)
+            # A* has no route from this position: move to another zone and retry.
+            return self._begin(now, pose, safety, reason_prefix='no A* route')
         return (0.0, 0.0)

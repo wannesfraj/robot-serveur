@@ -19,6 +19,18 @@ for package in (ROOT/'ros_ws/src').iterdir():
         sys.path.insert(0, str(package))
 import numpy  # noqa: F401  (import before sys.modules is patched, numpy cannot be re-imported)
 import ros_sim
+from types import ModuleType as _ModuleType
+# The archive does not ship the EKF / map-localizer modules imported by
+# fabtino_core.localization.__init__. Provide empty stand-ins only when missing.
+for _name in ('ekf', 'motion_model', 'map_localizer'):
+    _full = 'fabtino_core.localization.'+_name
+    try:
+        __import__(_full)
+    except ImportError:
+        _stub = _ModuleType(_full)
+        for _attr in ('LocalizationEKF', 'EKFConfig', 'wrap_angle', 'KnownMapLocalizer', 'KnownMapLocalizerConfig'):
+            setattr(_stub, _attr, None)
+        sys.modules[_full] = _stub
 
 RADIUS, RES = 8.0, 0.1
 _NODES = {}
@@ -40,7 +52,11 @@ def node_classes():
 class World:
     """Robot + obstacles + the sensor/map messages the real stack would provide."""
 
-    def __init__(self, obstacles, known_from=1.2, soc=None, reveal_after_block_s=None):
+    def __init__(self, obstacles, known_from=1.2, soc=None, reveal_after_block_s=None,
+                 webots_scan=True, start=(0.0, 0.0, 0.0)):
+        # Webots publishes the Pioneer scan with +angle towards the RIGHT
+        # (see fabtino_core.localization.frames, lidar_angle_sign=-1).
+        self.scan_sign = -1.0 if webots_scan else 1.0
         self.bus = ros_sim.Bus()
         nodes = node_classes()
         self.safety = nodes['safety']()
@@ -53,7 +69,7 @@ class World:
         self.cached = {}
         self.reveal_after_block_s = reveal_after_block_s   # A* only learns the obstacle this long after the stop
         self.first_block = None
-        self.x = self.y = self.yaw = 0.0
+        self.x, self.y, self.yaw = start
         self.v = self.w = 0.0
         self.trace = []
         self.pub = {name: ros_sim.Publisher(self.bus, topic) for name, topic in dict(
@@ -104,7 +120,7 @@ class World:
         scan.angle_min, scan.angle_increment = -math.pi, 2*math.pi/360
         ranges = []
         for i in range(360):
-            angle = scan.angle_min+i*scan.angle_increment+self.yaw
+            angle = self.scan_sign*(scan.angle_min+i*scan.angle_increment)+self.yaw
             best = float('inf')
             for ox, oy, r in self.active_obstacles():
                 dx, dy = ox-self.x, oy-self.y

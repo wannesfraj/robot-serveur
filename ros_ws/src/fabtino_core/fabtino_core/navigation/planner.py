@@ -161,7 +161,10 @@ class OccupancyGrid:
         return min(candidates)[1] if candidates else None
 
 
-def astar(grid: OccupancyGrid, start: tuple[int, int], goal: tuple[int, int], blocked: np.ndarray, allow_unknown: bool = True, unknown_cost: float = 1.15, edge_allowed=None) -> list[tuple[int, int]]:
+def astar(grid: OccupancyGrid, start: tuple[int, int], goal: tuple[int, int], blocked: np.ndarray, allow_unknown: bool = True, unknown_cost: float = 1.15, edge_allowed=None, extra_cost: np.ndarray | None = None) -> list[tuple[int, int]]:
+    """A* on the grid. ``extra_cost`` (optional, same shape as the grid) adds a
+    per-cell penalty, e.g. near obstacles, so routes keep some distance when the
+    room allows it instead of touching the inflation border."""
     if not grid.traversable(start, blocked, allow_unknown) or not grid.traversable(goal, blocked, allow_unknown):
         return []
     directions = ((1, 0), (-1, 0), (0, 1), (0, -1),
@@ -189,6 +192,8 @@ def astar(grid: OccupancyGrid, start: tuple[int, int], goal: tuple[int, int], bl
             step = math.sqrt(2.0) if dx and dy else 1.0
             if grid.data[nxt[1], nxt[0]] < 0:
                 step *= unknown_cost
+            if extra_cost is not None:
+                step += float(extra_cost[nxt[1], nxt[0]])
             new_cost = cost[current] + step
             if new_cost < cost.get(nxt, float("inf")):
                 cost[nxt] = new_cost
