@@ -97,6 +97,7 @@ class NavigationFlowTests(unittest.TestCase):
         # Restore sys.modules after loading; do not mask ROS for other test suites.
         with patch.dict(sys.modules, modules):
             cls.Mission = load_adapter('fabtino_navigation', 'mission_manager_node').MissionManagerNode
+            cls.Battery = load_adapter('fabtino_navigation', 'battery_node').BatteryNode
             cls.Global = load_adapter('fabtino_navigation', 'global_planner_node').GlobalPlannerNode
             cls.Local = load_adapter('fabtino_navigation', 'local_planner_node').LocalPlannerNode
             cls.Gateway = load_adapter('fabtino_viewer', 'viewer_gateway').ViewerGateway
@@ -156,6 +157,26 @@ class NavigationFlowTests(unittest.TestCase):
         self.assertLess(status['battery']['soc_after_pct'],15.)
         self.assertEqual(self.mission.goal.x,-3.)
 
+    def test_raising_charge_clears_old_refusal_and_allows_delivery_retry(self):
+        self.configure_delivery_battery(10.)
+        self.mission.config=validate_config(dict(
+            zones=[dict(id='station',name='Station A',x=2.,y=0.,radius=.2)],
+            base=dict(x=0.,y=0.,yaw_deg=0.)))
+        request=dict(tasks=[dict(zone_id='station',delay_s=0.)],return_to_base=True)
+        self.mission.start_delivery(request)
+        refused=json.loads(self.mission.status.messages[-1].data)
+        self.assertEqual(refused['state'],'battery_docked')
+        self.assertFalse(refused['battery']['accepted'])
+        self.assertFalse(self.mission.battery_returning)
+
+        self.mission.battery_cb(msg(dict(soc_pct=100.,config=self.mission.battery['config'])))
+        self.assertIsNone(self.mission.battery_report)
+        self.assertEqual(json.loads(self.mission.status.messages[-1].data)['state'],'battery_ready')
+        self.mission.start_delivery(request)
+        accepted=json.loads(self.mission.status.messages[-1].data)
+        self.assertEqual(accepted['state'],'delivery_approaching')
+        self.assertTrue(accepted['battery']['accepted'])
+
     def test_two_stop_delivery_reaches_each_stop_then_returns_to_base(self):
         self.configure_delivery_battery(30.)
         self.mission.start_delivery(dict(tasks=[dict(zone_id='station',delay_s=0.),
@@ -185,9 +206,16 @@ class NavigationFlowTests(unittest.TestCase):
         gateway.latest['nav']=json.dumps(dict(state='idle',delivery=dict(state='idle')))
         gateway.cmd('set_battery',dict(soc_pct=37,request_id='battery-test'))
         self.assertEqual(json.loads(gateway.pub_battery_request.messages[-1].data),
-                         dict(type='set_soc',soc_pct=37.0))
+                         dict(type='set_soc',soc_pct=37.0,request_id='battery-test'))
         gateway.latest['nav']=json.dumps(dict(state='following',delivery=dict(state='idle')))
         with self.assertRaises(ValueError):gateway.cmd('set_battery',dict(soc_pct=50))
+
+    def test_battery_node_echoes_charge_request_id_after_applying_soc(self):
+        battery=self.Battery()
+        battery.request_cb(msg(dict(type='set_soc',soc_pct=100.,request_id='battery-test')))
+        result=json.loads(battery.pub.messages[-1].data)
+        self.assertEqual(result['soc_pct'],100.)
+        self.assertEqual(result['request_id'],'battery-test')
 
     def test_goal_keeps_exact_endpoint_and_orientation_through_all_callbacks(self):
         self.start(x=10.03, y=.02, yaw_deg=80)

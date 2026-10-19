@@ -30,6 +30,7 @@ class BatteryNode(Node):
         self.config = config
         self.state = BatteryState(config, float(self.get_parameter('initial_soc_pct').value),
                                   float(self.get_parameter('consumption_scale').value))
+        self.last_request_id=None
         self.pub = self.create_publisher(String, '/fabtino/battery', 10)
         self.create_subscription(Odometry, '/fabtino/odometry/filtered', self.odom_cb, 20)
         self.create_subscription(String, '/battery/request', self.request_cb, 10)
@@ -45,23 +46,29 @@ class BatteryNode(Node):
         try:
             request = json.loads(msg.data)
             kind = request.get('type')
+            request_id=request.get('request_id')
+            if request_id is not None and (not isinstance(request_id,str) or len(request_id)>128):
+                raise ValueError('Invalid battery request identifier')
             if kind == 'set_soc':
                 self.state.set_soc(float(request['soc_pct']))
             elif kind == 'charge':
                 self.state.set_soc(100.0)
             else:
                 raise ValueError('Unknown battery request type')
+            self.last_request_id=request_id
             self.publish()
         except (ValueError, KeyError, TypeError) as exc:
             self.get_logger().warning(f'Invalid battery request: {exc}')
 
     def publish(self):
         msg = String()
-        msg.data = json.dumps({'soc_pct': round(self.state.soc_pct, 3),
-                               'energy_wh': round(self.state.energy_wh, 3),
-                               'low': self.state.low,
-                               'simulated': True,
-                               'config': self.config.to_dict()})
+        payload={'soc_pct': round(self.state.soc_pct, 3),
+                 'energy_wh': round(self.state.energy_wh, 3),
+                 'low': self.state.low,
+                 'simulated': True,
+                 'config': self.config.to_dict()}
+        if self.last_request_id is not None:payload['request_id']=self.last_request_id
+        msg.data = json.dumps(payload)
         self.pub.publish(msg)
 
 

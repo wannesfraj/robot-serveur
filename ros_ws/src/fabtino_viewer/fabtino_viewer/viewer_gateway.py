@@ -225,7 +225,12 @@ class ViewerGateway(Node):
                 'battery_returning')
             if active_delivery or active_goal:
                 raise ValueError('Stop the current task before changing the simulated battery')
-            msg=String();msg.data=json.dumps({'type':'set_soc','soc_pct':soc})
+            request_id=payload.get('request_id')
+            if request_id is not None and (not isinstance(request_id,str) or len(request_id)>128):
+                raise ValueError('Invalid battery request identifier')
+            request={'type':'set_soc','soc_pct':soc}
+            if request_id is not None:request['request_id']=request_id
+            msg=String();msg.data=json.dumps(request)
             self.pub_battery_request.publish(msg)
             return
         if typ in ('set_navigation_config','delivery_start','delivery_return'):

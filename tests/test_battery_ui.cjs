@@ -48,3 +48,27 @@ test('idle battery forecast marks a route refused when its rebased arrival is be
   assert.match(element('batteryEstimate').textContent, /Mission refusée/);
   assert.equal(element('batteryEstimate').className, 'error');
 });
+
+test('battery control confirms the selected charge when the simulator reports it', () => {
+  const { ui, element } = batteryUi();
+  ui.setBatteryTestPending(100, 'test-charge-100');
+  assert.equal(element('applyBatteryTest').disabled, true);
+
+  ui.updateBattery(
+    { soc_pct: 100, simulated: true, config: { reserve_pct: 15, warning_pct: 20 } },
+    null,
+    { state: 'stopped' }
+  );
+  assert.equal(element('applyBatteryTest').disabled, true);
+
+  ui.updateBattery(
+    { soc_pct: 100, simulated: true, request_id: 'test-charge-100',
+      config: { reserve_pct: 15, warning_pct: 20 } },
+    null,
+    { state: 'stopped' }
+  );
+
+  assert.match(element('batteryTestStatus').textContent, /Charge de test appliqu/);
+  assert.equal(element('batteryTestStatus').className, '');
+  assert.equal(element('applyBatteryTest').disabled, false);
+});

@@ -134,12 +134,22 @@ class MissionManagerNode(Node):
         try:self.battery=json.loads(msg.data)
         except (ValueError,TypeError):return
         self.battery_stamp=self.seconds()
-        if (self.goal is None and not self.delivery.active) or self.battery_returning:return
         try:
             config=BatteryConfig.from_dict(self.battery['config'])
             threshold=min(100.,config.reserve_pct+float(self.get_parameter('battery_auto_return_margin_pct').value))
             soc=float(self.battery['soc_pct'])
         except (KeyError,TypeError,ValueError):return
+        if self.battery_returning:return
+        if self.goal is None and not self.delivery.active:
+            # Do not keep showing a previous refusal after the simulated charge
+            # has been raised back above reserve; the next mission will be
+            # estimated from this new SOC.
+            if (isinstance(self.battery_report,dict)
+                    and self.battery_report.get('accepted') is False and soc>=threshold):
+                self.battery_report=None
+                self.battery_leg_report=None
+                self.log('battery_ready',f'Battery restored to {soc:.1f}%; a new mission can be estimated')
+            return
         if soc<=threshold:
             self.begin_battery_return(f'Battery at {soc:.1f}% (return threshold {threshold:.1f}%)')
 

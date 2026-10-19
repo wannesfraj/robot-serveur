@@ -2,6 +2,7 @@ export const UIController = (() => {
   const $ = id => document.getElementById(id);
   let batteryTestInitialized = false;
   let batteryTestPendingPct = null;
+  let batteryTestPendingRequestId = null;
   let batteryControlsBusy = false;
 
   function log(message) {
@@ -131,7 +132,8 @@ export const UIController = (() => {
         $("batteryTestValue").textContent = `${slider.value} %`;
         batteryTestInitialized = true;
       }
-      if (batteryTestPendingPct !== null && Math.abs(soc - batteryTestPendingPct) < 0.15) {
+      if (batteryTestPendingPct !== null && battery.request_id === batteryTestPendingRequestId
+          && Math.abs(soc - batteryTestPendingPct) < 0.15) {
         slider.value = String(Math.round(soc));
         $("batteryTestValue").textContent = `${slider.value} %`;
         $("batteryTestStatus").textContent = `Charge de test appliquée : ${soc.toFixed(1)} %.`;
@@ -178,8 +180,9 @@ export const UIController = (() => {
     }
   }
 
-  function setBatteryTestPending(socPct) {
+  function setBatteryTestPending(socPct, requestId) {
     batteryTestPendingPct = Number(socPct);
+    batteryTestPendingRequestId = requestId;
     $("batteryTestStatus").textContent = `Application de la charge à ${batteryTestPendingPct.toFixed(0)} %…`;
     $("batteryTestStatus").className = "";
     $("batteryTestSoc").disabled = true;
@@ -188,6 +191,7 @@ export const UIController = (() => {
 
   function batteryTestError(reason) {
     batteryTestPendingPct = null;
+    batteryTestPendingRequestId = null;
     $("batteryTestStatus").textContent = reason || "Impossible d’appliquer la charge de test.";
     $("batteryTestStatus").className = "warn";
     $("batteryTestSoc").disabled = false;

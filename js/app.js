@@ -5,7 +5,7 @@ import { GridRenderer } from "./grid-renderer.js?v=delivery-v8";
 import { ThreeDRenderer } from "./three-renderer.js?v=delivery-v8";
 import { MapExporter, readPNGMetadata, validateBundle, validateNavigation } from "./map-exporter.js?v=delivery-v8";
 import { createNavigationFeatures } from "./navigation-features.js?v=delivery-v8";
-import { UIController } from "./ui-controller.js?v=battery-v2";
+import { UIController } from "./ui-controller.js?v=battery-v3";
 
 const $ = UIController.$;
 let MAX_LINEAR = 0.50;
@@ -24,6 +24,7 @@ let pendingOperation = null;
 let operationTimer = null;
 let activeMapId = null;
 let batteryPendingRequest = null;
+let batteryPendingTimer = null;
 let features = null;
 const drivePointers = new Map();
 const driveKeys = new Map();
@@ -68,6 +69,12 @@ function sendCommand(message, successText) {
   }
   if (successText) UIController.log(successText);
   return true;
+}
+
+function clearBatteryPendingRequest() {
+  clearTimeout(batteryPendingTimer);
+  batteryPendingTimer = null;
+  batteryPendingRequest = null;
 }
 
 function setOperationControls(busy) {
@@ -178,7 +185,7 @@ function processMessage(message) {
   features?.receive(message);
   if (message?.type === "command_result") {
     if (message.request_id === batteryPendingRequest) {
-      batteryPendingRequest = null;
+      clearBatteryPendingRequest();
       UIController.batteryTestError(message.reason);
     }
     finishOperation(message);
@@ -188,6 +195,9 @@ function processMessage(message) {
   if (!message || message.type !== "scan") return;
   finishOperation(message.operation);
   UIController.updateSafety(message.safety);
+  if (batteryPendingRequest && message.battery?.request_id === batteryPendingRequest) {
+    clearBatteryPendingRequest();
+  }
   UIController.updateBattery(message.battery, message.navigation?.battery, message.navigation);
 
   if (!viewerConfigApplied && message.configuration) {
@@ -425,7 +435,13 @@ function installUI() {
     const requestId = window.crypto?.randomUUID?.() || `battery-${Date.now()}`;
     if (sendCommand({ type: "set_battery", soc_pct: soc, request_id: requestId })) {
       batteryPendingRequest = requestId;
-      UIController.setBatteryTestPending(soc);
+      UIController.setBatteryTestPending(soc, requestId);
+      clearTimeout(batteryPendingTimer);
+      batteryPendingTimer = setTimeout(() => {
+        if (batteryPendingRequest !== requestId) return;
+        clearBatteryPendingRequest();
+        UIController.batteryTestError("Le robot n’a pas confirmé la nouvelle charge. Vérifiez la simulation puis réessayez.");
+      }, 5000);
     }
   };
 
@@ -627,6 +643,10 @@ function init() {
   WebSocketManager.on("close", () => {
     releaseDrive();
     if (pendingOperation) finishOperation({ request_id: pendingOperation.requestId, state: "error", reason: "Connection lost before confirmation. Reconnect and retry." });
+    if (batteryPendingRequest) {
+      clearBatteryPendingRequest();
+      UIController.batteryTestError("Connexion perdue avant la confirmation de la charge.");
+    }
     UIController.log("WebSocket closed; reconnecting...");
   });
 
