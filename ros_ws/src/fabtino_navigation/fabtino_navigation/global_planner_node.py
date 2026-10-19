@@ -71,6 +71,7 @@ class GlobalPlannerNode(Node):
         self.path = []
         self.transient_obstacles = {}
         self.last_no_path_goal = None
+        self.last_no_path_emit_at = None
         self.zones=[]
         self.base=None
         self.config_revision=-1
@@ -289,6 +290,7 @@ class GlobalPlannerNode(Node):
             self.transient_obstacles={c:o for c,o in self.transient_obstacles.items()
                                       if o[2]-now>short}
             self.last_no_path_goal = None
+            self.last_no_path_emit_at = None
             self.battery_refused = self.battery_report = None
             self.battery_waiting_goal = None
             self.publish_path()
@@ -309,12 +311,14 @@ class GlobalPlannerNode(Node):
             self.path = []
             self.publish_path()
 
-    def emit(self, state, reason=''):
+    def emit(self, state, reason='', **details):
         msg = String()
-        msg.data = json.dumps({'state': state, 'reason': reason, 'battery': self.battery_report,
-                               'goal_id': self.goal.goal_id if self.goal else None,
-                               'goal': [self.goal.x, self.goal.y] if self.goal else None,
-                               'path_cells': len(self.path)})
+        payload={'state': state, 'reason': reason, 'battery': self.battery_report,
+                 'goal_id': self.goal.goal_id if self.goal else None,
+                 'goal': [self.goal.x, self.goal.y] if self.goal else None,
+                 'path_cells': len(self.path)}
+        payload.update(details)
+        msg.data = json.dumps(payload)
         self.status.publish(msg)
 
     def fail(self, state, reason=''):
@@ -423,6 +427,7 @@ class GlobalPlannerNode(Node):
                 return
             self.path = path
             self.last_no_path_goal = None
+            self.last_no_path_emit_at = None
             self.publish_path()
             if self.path:self.emit('path_ready')
             else:self.emit('pathfinding_failed','The route intersects a denied zone')
@@ -431,9 +436,18 @@ class GlobalPlannerNode(Node):
             # recovery moves the robot to a better planning position.
             self.path=[]
             self.publish_path()
-            if self.last_no_path_goal!=self.goal.goal_id:
-                self.emit('waiting_for_route','No A* route is available yet; keeping the goal active and retrying')
+            if (self.last_no_path_goal!=self.goal.goal_id or self.last_no_path_emit_at is None
+                    or now_seconds-self.last_no_path_emit_at>=1.0):
+                allow_unknown=bool(self.get_parameter('allow_unknown').value)
+                self.emit('waiting_for_route','No A* route is available yet; keeping the goal active and retrying',
+                    start_cell=list(start),goal_cell=list(goal),
+                    start_traversable=bool(self.grid.traversable(start,blocked,allow_unknown)),
+                    goal_traversable=bool(self.grid.traversable(goal,blocked,allow_unknown)),
+                    blocked_cells=int(blocked.sum()),remembered_obstacles=len(self.transient_obstacles),
+                    pose=[float(self.pose[0]),float(self.pose[1])],
+                    goal_point=[float(self.goal.x),float(self.goal.y)])
                 self.last_no_path_goal=self.goal.goal_id
+                self.last_no_path_emit_at=now_seconds
 
     def relax_start(self,blocked,start,zone_clearance):
         """Free the inflation-only cells within ``start_escape_radius_m`` of the robot."""

@@ -308,6 +308,48 @@ class NavigationFlowTests(unittest.TestCase):
         self.assertEqual(self.local.pub.messages[-1].twist.linear.x, 0)
         self.assertEqual(self.local.pub.messages[-1].twist.angular.z, 0)
 
+    def test_no_route_status_repeats_with_endpoint_diagnostics(self):
+        self.start()
+        self.planner.grid.data.fill(100)
+        self.planner.grid.static_data.fill(100)
+        self.planner.plan()
+        first=json.loads(self.planner.status.messages[-1].data)
+        self.assertEqual(first['state'],'waiting_for_route')
+        self.assertIn('goal_traversable',first)
+        self.assertFalse(first['goal_traversable'])
+        self.planner.now=1.1
+        self.planner.plan()
+        second=json.loads(self.planner.status.messages[-1].data)
+        self.assertEqual(second['state'],'waiting_for_route')
+        self.assertEqual(second['goal_id'],first['goal_id'])
+
+    def test_delivery_retargets_when_astar_reports_blocked_approach(self):
+        self.configure_delivery_battery(30.)
+        self.mission.start_delivery(dict(tasks=[dict(zone_id='station',delay_s=0.)],return_to_base=True))
+        original=self.mission.goal
+        self.mission.global_cb(msg(dict(goal_id=original.goal_id,state='waiting_for_route',
+                                         goal_traversable=False)))
+        self.assertNotEqual(self.mission.goal.goal_id,original.goal_id)
+        self.assertGreater(math.hypot(self.mission.goal.x-original.x,self.mission.goal.y-original.y),.05)
+        self.assertEqual(self.mission.delivery.state,'approaching')
+        self.assertEqual(json.loads(self.mission.pub.messages[-1].data)['goal_id'],self.mission.goal.goal_id)
+
+    def test_no_route_after_wait_uses_fresh_safety_data_to_escape(self):
+        self.start()
+        self.planner.grid.data.fill(100)
+        self.planner.grid.static_data.fill(100)
+        self.planner.plan()
+        self.local.path_cb(self.planner.route_pub.messages[-1])
+        safety=dict(reason='ok',stop_active=False,front_m=2.,rear_m=2.,front_stop_m=.65,
+                    rear_stop_m=.65,turn_allowed=True,rotation_clearance_m=.52)
+        self.local.safety_cb(msg(safety))
+        self.tick_local()
+        self.local.now=3.5
+        self.local.safety_cb(msg(safety))
+        self.tick_local()
+        self.assertEqual(self.local.recovery.state,'backing_off')
+        self.assertAlmostEqual(self.local.pub.messages[-1].twist.linear.x,-.10)
+
     def test_route_keeps_robot_footprint_away_from_a_table(self):
         obstacle=self.planner.grid.cell(5., 0.)
         self.planner.grid.set_cell(obstacle, 100)

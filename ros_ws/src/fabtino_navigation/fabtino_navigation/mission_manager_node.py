@@ -25,10 +25,13 @@ class MissionManagerNode(Node):
         self.delivery=Delivery();self.pending_import_config=None;self.pose_yaw=0.
         self.battery=None;self.battery_stamp=None;self.battery_report=None;self.battery_leg_report=None
         self.battery_returning=False;self.battery_interrupted_delivery=False
+        self.delivery_retarget_attempts=0
         self.last_navigation_map_ns=None
         self.declare_parameter('navigation_clearance_m',.60)
         self.declare_parameter('robot_width_m',.70)
         self.declare_parameter('robot_safety_margin_m',.08)
+        self.declare_parameter('delivery_retarget_max_attempts',3)
+        self.declare_parameter('delivery_retarget_buffer_step_m',.20)
         self.declare_parameter('battery_required',False)
         self.declare_parameter('battery_max_age_s',5.0)
         self.declare_parameter('battery_auto_return_margin_pct',0.0)
@@ -290,6 +293,11 @@ class MissionManagerNode(Node):
             if self.delivery.active:self.delivery.fail(reason)
             self.stop_leg();self.battery_returning=False;self.battery_interrupted_delivery=False
             self.log('battery_return_failed',reason);return
+        # A* can invalidate a delivery approach after a newer map or obstacle
+        # observation arrives. If the endpoint itself is blocked, select another
+        # reachable point around the same service zone instead of waiting forever.
+        if payload.get('state')=='waiting_for_route' and self.retarget_delivery_approach(payload):
+            return
         # path_ready repeats during replanning; retain the local execution state.
         if self.delivery.active and payload.get('state') in ('pathfinding_failed','goal_outside_map','goal_in_denied_zone','robot_in_denied_zone'):
             self.delivery.fail(payload.get('reason') or payload['state']);self.stop_leg();self.log('delivery_failed',self.delivery.reason);return
@@ -297,6 +305,40 @@ class MissionManagerNode(Node):
             self.log(payload.get('state'), payload.get('reason', ''))
 
     def seconds(self):return self.get_clock().now().nanoseconds*1e-9
+
+    def retarget_delivery_approach(self,payload):
+        if (not self.delivery.active or self.delivery.state!='approaching' or self.battery_returning
+                or payload.get('goal_traversable') is not False):
+            return False
+        maximum=int(self.get_parameter('delivery_retarget_max_attempts').value)
+        if self.delivery_retarget_attempts>=maximum or self.map is None or self.pose is None:
+            return False
+        try:
+            origin=self.map.info.origin.position
+            grid=CoreGrid(self.map.info.resolution,-origin.x)
+            grid.load(grid.resolution,grid.radius,self.map.data)
+            task=self.delivery.tasks[self.delivery.index]
+            self.delivery_retarget_attempts+=1
+            buffer=.12+float(self.get_parameter('delivery_retarget_buffer_step_m').value)*self.delivery_retarget_attempts
+            target=approach_target(grid,self.pose,self.config['zones'],task['zone_id'],
+                float(self.get_parameter('navigation_clearance_m').value),buffer=buffer,
+                obstacle_clearance=max(float(self.get_parameter('robot_width_m').value)/2.0+
+                                       float(self.get_parameter('robot_safety_margin_m').value),.52))
+        except (ValueError,KeyError,TypeError) as exc:
+            self.log('delivery_waiting_for_route',f'No alternate safe approach yet: {exc}')
+            return True
+        if self.goal is not None:
+            shift=math.hypot(target['x']-self.goal.x,target['y']-self.goal.y)
+            if shift<max(.05,grid.resolution*.5):
+                self.log('delivery_waiting_for_route','A* reports the approach blocked; searching a farther point')
+                return True
+        self.goal=Goal.from_request(target)
+        self.delivery.goal_id=self.goal.goal_id
+        self.delivery.target=dict(target)
+        self.publish_goal()
+        self.log('delivery_retargeting',
+                 f'A* reports the approach blocked; trying a farther safe point ({self.delivery_retarget_attempts}/{maximum})')
+        return True
 
     def publish_config(self):
         msg=String();msg.data=json.dumps(dict(self.config,revision=self.config_revision,**self.config_result))
@@ -428,6 +470,7 @@ class MissionManagerNode(Node):
 
     def start_leg(self):
         try:
+            self.delivery_retarget_attempts=0
             if self.delivery.state=='returning':target=self.check_base()
             else:
                 grid=CoreGrid(self.map.info.resolution,-self.map.info.origin.position.x)

@@ -42,10 +42,12 @@ class LocalPlannerNode(Node):
                                recovery_turn_margin_m=0.10,     # marge au-dela de rotation_clearance pour pouvoir pivoter
                                recovery_max_escape_m=1.5,       # recul max apres plusieurs echecs au meme endroit
                                recovery_max_attempts=6,         # 0 = reessayer indefiniment
-                               recovery_no_route_s=5.0)         # pas de route A* apres un obstacle -> on se deplace
+                               recovery_no_route_s=3.5)         # pas de route A* -> attendre puis sortir prudemment
         for name,default in recovery_defaults.items():self.declare_parameter(name,default)
         self.declare_parameter('recovery_enabled',True)
+        self.declare_parameter('safety_status_timeout_s',.50)
         self.safety_status={}
+        self.safety_status_received_at=None
         self.no_route_since=None
         self.recovery=ObstacleRecovery(
             wait_s=float(self.get_parameter('recovery_wait_s').value),
@@ -98,6 +100,7 @@ class LocalPlannerNode(Node):
         try:payload=json.loads(msg.data)
         except ValueError:return
         self.safety_status=payload
+        self.safety_status_received_at=self.get_clock().now().nanoseconds*1e-9
         reason=str(payload.get('reason',''))
         blocked=bool(payload.get('stop_active')) and reason.startswith(('front_obstacle','rear_obstacle','rotation_obstacle'))
         if blocked and self.safety_blocked_since is None:self.safety_blocked_since=self.get_clock().now().nanoseconds*1e-9
@@ -155,21 +158,30 @@ class LocalPlannerNode(Node):
         # pas immobile pour toujours : on se deplace vers une autre zone et on
         # redemande un chemin.
         waiting = (c.goal is not None and c.state == 'waiting_for_path' and not c.path
-                   and not self.recovery.active and self.recovery.encountered_obstacle)
+                   and not self.recovery.active)
         if not waiting:
             self.no_route_since = None
         else:
             if self.no_route_since is None:
                 self.no_route_since = seconds
             elif seconds-self.no_route_since >= float(self.get_parameter('recovery_no_route_s').value):
-                self.no_route_since = None
-                escape = self.recovery.force_escape(seconds, self.pose, self.safety_status)
-                if self.recovery.failure:
-                    reason = self.recovery.failure
-                    self.recovery.reset()
-                    return c.fail(reason)
-                if escape is not None:
-                    return escape
+                safety_age=(None if self.safety_status_received_at is None
+                            else seconds-self.safety_status_received_at)
+                safety_fresh=(safety_age is not None and 0.0<=safety_age<=
+                              float(self.get_parameter('safety_status_timeout_s').value))
+                sensors_clear=(self.safety_status.get('reason')=='ok'
+                               and not self.safety_status.get('stop_active',False))
+                # This also covers map-only no-route failures which never caused
+                # a safety stop, while refusing to move on stale/failed sensors.
+                if safety_fresh and sensors_clear:
+                    self.no_route_since = None
+                    escape = self.recovery.force_escape(seconds, self.pose, self.safety_status)
+                    if self.recovery.failure:
+                        reason = self.recovery.failure
+                        self.recovery.reset()
+                        return c.fail(reason)
+                    if escape is not None:
+                        return escape
         return c.command(self.pose, seconds, velocity=self.velocity)
 
     def control(self):

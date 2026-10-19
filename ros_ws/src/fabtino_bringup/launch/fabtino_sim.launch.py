@@ -34,7 +34,7 @@ def generate_launch_description():
             # [FIX] reculer jusqu'a une zone ou le robot peut pivoter, recul
             # progressif, limite de tentatives (0 = infini), evasion si pas de route.
             'recovery_turn_margin_m':0.10, 'recovery_max_escape_m':1.5,
-            'recovery_max_attempts':6, 'recovery_no_route_s':5.0}]),
+            'recovery_max_attempts':6, 'recovery_no_route_s':3.5}]),
         Node(package='fabtino_safety',executable='fabtino-safety',name='safety_supervisor',parameters=[{'front_stop_distance_m':0.42,'rear_stop_distance_m':0.42,'braking_deceleration_mps2':0.8,'braking_reaction_time_s':0.12,
             # [FIX] convention d'angle Webots + virages doux autorises pres d'une chaise
             'lidar_angle_sign':-1.0,'arc_min_radius_m':0.6,'arc_side_clearance_m':0.45}]),
