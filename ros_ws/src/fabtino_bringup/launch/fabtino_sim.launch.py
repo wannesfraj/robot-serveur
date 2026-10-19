@@ -13,7 +13,7 @@ def generate_launch_description():
         # Battery model (placeholder coefficients: calibrate on the real robot).
         # consumption_scale>1 drains faster in simulation; reserve_pct is the refusal threshold.
         Node(package='fabtino_navigation',executable='fabtino-battery',name='battery',parameters=[{'capacity_wh':480.0,'initial_soc_pct':100.0,'reserve_pct':15.0,'warning_pct':20.0,'safety_factor':1.25,'consumption_scale':1.0}]),
-        Node(package='fabtino_navigation',executable='fabtino-global-planner',name='global_planner',parameters=[{'resolution_m':0.10,'radius_m':20.0,'robot_radius_m':0.52,'robot_width_m':0.70,'safety_margin_m':0.08,'allow_unknown':True,'unknown_cost':1.15,'battery_required':True,
+        Node(package='fabtino_navigation',executable='fabtino-global-planner',name='global_planner',parameters=[{'resolution_m':0.10,'radius_m':20.0,'robot_radius_m':0.52,'robot_width_m':0.70,'safety_margin_m':0.08,'allow_unknown':True,'unknown_cost':1.15,'battery_required':True,'path_reuse_tolerance_m':0.60,
             # [FIX] memoire de la forme des obstacles + cout doux pres des obstacles
             'lidar_angle_sign':-1.0,'obstacle_memory_range_m':2.0,'static_obstacle_ttl_s':60.0,
             'obstacle_clear_tolerance_m':0.25,'obstacle_cost_band_m':0.30,'obstacle_cost_weight':3.0}]),

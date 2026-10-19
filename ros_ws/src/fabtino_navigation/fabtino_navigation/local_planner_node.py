@@ -134,8 +134,9 @@ class LocalPlannerNode(Node):
         c = self.controller
         if not bool(self.get_parameter('recovery_enabled').value):
             return c.command(self.pose, seconds, velocity=self.velocity)
-        # Only recover while driving along a route; final alignment/settling is left alone.
-        driving = c.goal is not None and c.state in ('following', 'approaching', 'turning_to_path')
+        # Recovery owns route following and final rotation, but not braking or settling.
+        driving = c.goal is not None and c.state in (
+            'following', 'approaching', 'turning_to_path', 'aligning')
         self.recovery.goal_distance = (None if c.goal is None or self.pose is None
                                        else math.hypot(c.goal.x-self.pose[0], c.goal.y-self.pose[1]))
         override = self.recovery.update(seconds, self.pose, self.safety_status,

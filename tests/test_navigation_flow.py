@@ -10,7 +10,7 @@ from pathlib import Path
 import sys
 from types import ModuleType, SimpleNamespace as NS
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).parents[1]
 for package in ('fabtino_navigation', 'fabtino_core'):
@@ -113,6 +113,16 @@ class NavigationFlowTests(unittest.TestCase):
     def tick_local(self):
         self.local.pose_stamp = self.local.now
         self.local.control()
+
+    def mark_planner_map_changed(self):
+        # The production map callback invalidates these caches; direct array
+        # edits in tests must model that callback explicitly.
+        self.planner.map_revision += 1
+        self.planner._overlay_dirty = True
+        self.planner._inflation_cache_signature = None
+        self.planner._inflation_cache.clear()
+        self.planner._zone_mask_cache_key = None
+        self.planner._extra_cost_cache_key = None
 
     def start(self, **request):
         self.mission.req_cb(msg(dict(type='goal', x=10, y=0, yaw_deg=90) | request))
@@ -226,6 +236,37 @@ class NavigationFlowTests(unittest.TestCase):
         self.tick_local()
         self.assertGreater(self.local.pub.messages[-1].twist.linear.x, 0)
 
+    def test_clear_route_is_reused_without_rerunning_a_star(self):
+        self.start(x=5., y=0., yaw_deg=None)
+        original = list(self.planner.path)
+        start = self.planner.grid.cell(*self.planner.pose)
+        goal = self.planner.grid.cell(5., 0.)
+        alternate = [start, self.planner.grid.cell(1.5, .5),
+                     self.planner.grid.cell(3., .5), goal]
+        astar = Mock(return_value=alternate)
+        with patch.dict(self.planner.plan.__globals__, {'astar': astar}):
+            self.planner.plan()
+        astar.assert_not_called()
+        self.assertEqual(self.planner.path, original)
+
+    def test_a_star_replaces_reused_route_when_obstacle_blocks_it(self):
+        self.start(x=5., y=0., yaw_deg=None)
+        original = list(self.planner.path)
+        obstacle = self.planner.grid.cell(3., 0.)
+        self.planner.grid.data[obstacle[1], obstacle[0]] = 100
+        self.planner.grid.static_data[obstacle[1], obstacle[0]] = 100
+        self.mark_planner_map_changed()
+
+        self.planner.plan()
+
+        self.assertNotEqual(self.planner.path, original)
+        clearance = max(
+            float(self.planner.get_parameter('robot_width_m').value)/2.0
+            + float(self.planner.get_parameter('safety_margin_m').value),
+            float(self.planner.get_parameter('rotation_clearance_m').value))
+        blocked = self.planner.grid.inflated_obstacles(clearance)
+        self.assertTrue(all(not blocked[y, x] for x, y in self.planner.path))
+
     def test_stop_cancels_both_planners_and_rejects_delayed_path(self):
         self.start()
         old_route = self.planner.route_pub.messages[-1]
@@ -289,6 +330,29 @@ class NavigationFlowTests(unittest.TestCase):
         self.assertFalse(self.mission.explore_mode)
         self.assertEqual(json.loads(self.mission.status.messages[-1].data)['reason'], 'final_heading_no_progress')
 
+    def test_static_obstacle_during_final_alignment_triggers_escape_recovery(self):
+        self.start(x=10., y=0., yaw_deg=90.)
+        self.local.pose = (10., 0., 0.)
+        self.local.pose_stamp = self.local.now
+        self.tick_local()
+        self.assertEqual(self.local.controller.state, 'aligning')
+
+        self.local.safety_cb(msg(dict(
+            stop_active=True, reason='rotation_obstacle: too close to turn',
+            nearest_m=.30, nearest_bearing_rad=0., rotation_clearance_m=.52,
+            front_m=.30, front_stop_m=.65, rear_m=2., rear_stop_m=.65,
+            turn_allowed=False)))
+        self.local.now = .1
+        self.local.pose_stamp = self.local.now
+        self.tick_local()
+        self.assertEqual(self.local.recovery.state, 'waiting_obstacle')
+
+        self.local.now = 3.7
+        self.local.pose_stamp = self.local.now
+        self.tick_local()
+        self.assertEqual(self.local.recovery.state, 'backing_off')
+        self.assertLess(self.local.pub.messages[-1].twist.linear.x, 0.)
+
     def test_diagnostics_refresh_even_when_control_state_is_unchanged(self):
         self.start()
         self.tick_local()
@@ -328,6 +392,7 @@ class NavigationFlowTests(unittest.TestCase):
         self.start()
         self.planner.grid.data.fill(100)
         self.planner.grid.static_data.fill(100)
+        self.mark_planner_map_changed()
         self.planner.plan()
         self.local.path_cb(self.planner.route_pub.messages[-1])
         self.tick_local()
@@ -340,6 +405,7 @@ class NavigationFlowTests(unittest.TestCase):
         self.start()
         self.planner.grid.data.fill(100)
         self.planner.grid.static_data.fill(100)
+        self.mark_planner_map_changed()
         self.planner.plan()
         first=json.loads(self.planner.status.messages[-1].data)
         self.assertEqual(first['state'],'waiting_for_route')
@@ -366,6 +432,7 @@ class NavigationFlowTests(unittest.TestCase):
         self.start()
         self.planner.grid.data.fill(100)
         self.planner.grid.static_data.fill(100)
+        self.mark_planner_map_changed()
         self.planner.plan()
         self.local.path_cb(self.planner.route_pub.messages[-1])
         safety=dict(reason='ok',stop_active=False,front_m=2.,rear_m=2.,front_stop_m=.65,

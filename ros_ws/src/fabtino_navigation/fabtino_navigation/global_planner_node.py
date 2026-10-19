@@ -2,6 +2,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import replace
+import numpy as np
 import rclpy
 from rclpy.node import Node
 from nav_msgs.msg import OccupancyGrid, Odometry, Path as NavPath
@@ -31,6 +32,8 @@ class GlobalPlannerNode(Node):
         # robot the inflation (NOT the raw obstacle cells, NOT denied zones) is relaxed so A* can plan the way out.
         self.declare_parameter('start_escape_radius_m', 0.5)
         self.declare_parameter('start_escape_hard_margin_m', 0.20)
+        # Avoid replacing a clear route with every small live-map fluctuation.
+        self.declare_parameter('path_reuse_tolerance_m', 0.60)
         self.declare_parameter('battery_required', False)
         self.declare_parameter('battery_max_age_s', 5.0)
         self.declare_parameter('battery_wait_timeout_s', 5.0)
@@ -69,9 +72,19 @@ class GlobalPlannerNode(Node):
         self.goal_started_at = None
         self.return_to_base = False
         self.path = []
+        self.return_path = []
         self.transient_obstacles = {}
+        self.map_revision = 0
+        self._overlay_dirty = True
+        self._inflation_cache_signature = None
+        self._inflation_cache = {}
+        self._zone_mask_cache_key = None
+        self._zone_mask_cache = None
+        self._extra_cost_cache_key = None
+        self._extra_cost_cache = None
         self.last_no_path_goal = None
         self.last_no_path_emit_at = None
+        self.last_no_path_signature = None
         self.zones=[]
         self.base=None
         self.config_revision=-1
@@ -97,8 +110,31 @@ class GlobalPlannerNode(Node):
         elif self.last_navigation_map_ns is not None and now-self.last_navigation_map_ns<600_000_000:return
         resolution = float(msg.info.resolution)
         radius = -float(msg.info.origin.position.x)
-        self.grid = CoreGrid(resolution, radius)
-        self.grid.load(resolution, radius, msg.data)
+        candidate = CoreGrid(resolution, radius)
+        candidate.load(resolution, radius, msg.data)
+        if (self.grid is not None
+                and self.grid.resolution == candidate.resolution
+                and self.grid.radius == candidate.radius
+                and np.array_equal(self.grid.static_data, candidate.static_data)):
+            return
+        self.grid = candidate
+        self.map_revision += 1
+        self._overlay_dirty = True
+        self._inflation_cache_signature = None
+        self._inflation_cache.clear()
+        self._zone_mask_cache_key = None
+        self._extra_cost_cache_key = None
+
+    def _inflated_obstacles_cached(self, margin):
+        signature = (self.map_revision, tuple(sorted(self.transient_obstacles)))
+        if signature != self._inflation_cache_signature:
+            self._inflation_cache_signature = signature
+            self._inflation_cache.clear()
+            self._extra_cost_cache_key = None
+        key = round(float(margin), 6)
+        if key not in self._inflation_cache:
+            self._inflation_cache[key] = self.grid.inflated_obstacles(key)
+        return self._inflation_cache[key]
 
     def config_cb(self,msg):
         payload=json.loads(msg.data);revision=int(payload.get('revision',0))
@@ -107,7 +143,8 @@ class GlobalPlannerNode(Node):
         changed=zones!=self.zones or base!=self.base
         self.config_revision=revision;self.zones=zones;self.base=base
         if changed:
-            self.path=[];self.publish_path()
+            self.path=[];self.return_path=[];self.publish_path()
+            self._zone_mask_cache_key = None
 
     def pose_cb(self, msg):
         self.pose = (msg.pose.pose.position.x, msg.pose.pose.position.y)
@@ -186,6 +223,8 @@ class GlobalPlannerNode(Node):
                 gone.append(cell)
         for cell in gone:
             self.transient_obstacles.pop(cell, None)
+        if gone:
+            self._overlay_dirty = True
 
     def remember_obstacle(self, distance, angle, ttl=None):
         world=lidar_return_to_world(
@@ -209,6 +248,8 @@ class GlobalPlannerNode(Node):
         if previous is None and len(self.transient_obstacles)>=int(self.get_parameter('obstacle_memory_max_cells').value):
             oldest=min(self.transient_obstacles,key=lambda k:self.transient_obstacles[k][2])
             self.transient_obstacles.pop(oldest,None)
+        if previous is None:
+            self._overlay_dirty = True
         self.transient_obstacles[cell]=(world[0],world[1],expiry)
 
     def battery_cb(self, msg):
@@ -272,6 +313,33 @@ class GlobalPlannerNode(Node):
         return ('battery_insufficient',
                 'Battery too low even for the minimum route estimate: '+report['reason'])
 
+    def retain_safe_path(self, start, blocked, route=None):
+        """Reuse the old route while it remains close and clear in the live map."""
+        route = self.path if route is None else route
+        if not route:
+            return None
+        size = self.grid.size
+        if any(not (isinstance(cell, (tuple, list)) and len(cell) == 2
+                    and 0 <= int(cell[0]) < size and 0 <= int(cell[1]) < size)
+               for cell in route):
+            return None
+        valid = list(enumerate(route))
+        nearest_index, nearest = min(
+            valid, key=lambda item: (item[1][0]-start[0])**2 + (item[1][1]-start[1])**2)
+        max_cells = float(self.get_parameter('path_reuse_tolerance_m').value) / self.grid.resolution
+        if math.hypot(nearest[0]-start[0], nearest[1]-start[1]) > max_cells:
+            return None
+        remaining = route[nearest_index:]
+        for x, y in remaining:
+            x, y = int(x), int(y)
+            if not (0 <= x < size and 0 <= y < size) or blocked[y, x]:
+                return None
+        # Advance the start while keeping the closest old waypoint. The publish
+        # method replaces this first cell with the latest robot pose.
+        if tuple(nearest) == tuple(start):
+            return [start] + list(remaining[1:])
+        return [start] + list(remaining)
+
     def goal_cb(self, msg):
         try:
             payload = json.loads(msg.data)
@@ -283,14 +351,19 @@ class GlobalPlannerNode(Node):
             self.goal_started_at = self.get_clock().now().nanoseconds*1e-9 if goal is not None else None
             self.return_to_base = bool(payload.get('return_to_base',False))
             self.path = []
+            self.return_path = []
             # [FIX] garder les obstacles statiques confirmes pour le trajet suivant
             # (A -> B -> base) : seuls les points courts (dynamiques) sont oublies.
             now=self.get_clock().now().nanoseconds*1e-9
             short=float(self.get_parameter('transient_obstacle_ttl_s').value)+1e-6
-            self.transient_obstacles={c:o for c,o in self.transient_obstacles.items()
-                                      if o[2]-now>short}
+            retained_obstacles={c:o for c,o in self.transient_obstacles.items()
+                                if o[2]-now>short}
+            if len(retained_obstacles)!=len(self.transient_obstacles):
+                self._overlay_dirty=True
+            self.transient_obstacles=retained_obstacles
             self.last_no_path_goal = None
             self.last_no_path_emit_at = None
+            self.last_no_path_signature = None
             self.battery_refused = self.battery_report = None
             self.battery_waiting_goal = None
             self.publish_path()
@@ -367,31 +440,59 @@ class GlobalPlannerNode(Node):
         if point_denied(self.goal.x,self.goal.y,self.zones,zone_clearance):
             self.fail('goal_in_denied_zone','Choose a target outside the denied zone and robot clearance');return
         now_seconds=self.get_clock().now().nanoseconds*1e-9
-        self.grid.restore_static()
         expired=[cell for cell,obstacle in self.transient_obstacles.items() if obstacle[2]<=now_seconds]
-        for cell in expired:self.transient_obstacles.pop(cell,None)
-        for x,y,_expiry in self.transient_obstacles.values():self.grid.set_dynamic_occupied(x,y)
-        blocked = self.grid.inflated_obstacles(passage_clearance)|zone_mask(self.grid,self.zones,zone_clearance)
+        if expired:
+            for cell in expired:self.transient_obstacles.pop(cell,None)
+            self._overlay_dirty = True
+        if self._overlay_dirty:
+            self.grid.restore_static()
+            for x,y,_expiry in self.transient_obstacles.values():self.grid.set_dynamic_occupied(x,y)
+            self._overlay_dirty = False
+        obstacle_signature = (self.map_revision, tuple(sorted(self.transient_obstacles)))
+        if obstacle_signature != self._inflation_cache_signature:
+            self._inflation_cache_signature = obstacle_signature
+            self._inflation_cache.clear()
+            self._extra_cost_cache_key = None
+        zone_key = (self.map_revision, self.config_revision, zone_clearance)
+        if zone_key != self._zone_mask_cache_key:
+            self._zone_mask_cache_key = zone_key
+            self._zone_mask_cache = zone_mask(self.grid,self.zones,zone_clearance)
+        blocked = (self._inflated_obstacles_cached(passage_clearance)
+                   | self._zone_mask_cache)
         if blocked[start[1],start[0]]:blocked=self.relax_start(blocked,start,zone_clearance)
         extra_cost=None
         band=float(self.get_parameter('obstacle_cost_band_m').value)
         weight=float(self.get_parameter('obstacle_cost_weight').value)
         if band>0 and weight>0:
-            near=self.grid.inflated_obstacles(passage_clearance+band*0.5)
-            far=self.grid.inflated_obstacles(passage_clearance+band)
-            extra_cost=far.astype(float)*(weight*0.4)+near.astype(float)*(weight*0.6)
+            cost_key=(obstacle_signature,passage_clearance,band,weight)
+            if cost_key != self._extra_cost_cache_key:
+                near=self._inflated_obstacles_cached(passage_clearance+band*0.5)
+                far=self._inflated_obstacles_cached(passage_clearance+band)
+                self._extra_cost_cache=far.astype(float)*(weight*0.4)+near.astype(float)*(weight*0.6)
+                self._extra_cost_cache_key=cost_key
+            extra_cost=self._extra_cost_cache
+        route_input_signature=(
+            self.map_revision, tuple(sorted(self.transient_obstacles)),
+            json.dumps({'zones':self.zones,'base':self.base},sort_keys=True),
+            start, goal,
+            int(math.floor(self.pose[0]/max(1e-6,self.grid.resolution*0.5))),
+            int(math.floor(self.pose[1]/max(1e-6,self.grid.resolution*0.5))))
         def edge_allowed(a,b):
             if not self.zones or (a!=start and b!=goal):return True
             pa=self.pose if a==start else self.grid.point(a)
             pb=(self.goal.x,self.goal.y) if b==goal else self.grid.point(b)
             return not segment_denied(pa,pb,self.zones,zone_clearance)
-        path = astar(self.grid, start, goal, blocked,
-                     bool(self.get_parameter('allow_unknown').value),
-                     float(self.get_parameter('unknown_cost').value),edge_allowed,extra_cost)
+        selected_path = self.retain_safe_path(start, blocked)
+        if selected_path is None:
+            if self.last_no_path_signature != route_input_signature:
+                selected_path = astar(self.grid, start, goal, blocked,
+                                      bool(self.get_parameter('allow_unknown').value),
+                                      float(self.get_parameter('unknown_cost').value),edge_allowed,extra_cost)
+        path = selected_path
         if path:
             # Estimate the full route, including the return to base when one is
             # configured. This is refreshed as the robot moves and the battery drains.
-            points=[self.grid.point(cell) for cell in path]
+            points=[self.grid.point(cell) for cell in selected_path]
             points[0]=tuple(self.pose);points[-1]=(self.goal.x,self.goal.y)
             battery_age=(None if self.battery_stamp is None else
                          self.get_clock().now().nanoseconds*1e-9-self.battery_stamp)
@@ -408,14 +509,18 @@ class GlobalPlannerNode(Node):
                         pa=(self.goal.x,self.goal.y) if a==goal else self.grid.point(a)
                         pb=base_point if b==base_cell else self.grid.point(b)
                         return not segment_denied(pa,pb,self.zones,zone_clearance)
-                    return_path=astar(self.grid,goal,base_cell,blocked,
-                                      bool(self.get_parameter('allow_unknown').value),
-                                      float(self.get_parameter('unknown_cost').value),return_edge_allowed)
+                    return_path=self.retain_safe_path(goal, blocked, self.return_path)
+                    if return_path is None:
+                        return_path=astar(self.grid,goal,base_cell,blocked,
+                                          bool(self.get_parameter('allow_unknown').value),
+                                          float(self.get_parameter('unknown_cost').value),return_edge_allowed)
                 if not return_path:
+                    self.return_path=[]
                     self.battery_refused=self.goal.goal_id
                     self.battery_report={'accepted':False,'return_path_available':False}
                     self.fail('battery_insufficient','Cannot reserve a safe route from the destination back to the configured base')
                     return
+                self.return_path=return_path
                 return_points=[self.grid.point(cell) for cell in return_path]
                 return_points[0]=(self.goal.x,self.goal.y);return_points[-1]=base_point
                 if len(return_points)>1:points.extend(return_points[1:])
@@ -425,13 +530,22 @@ class GlobalPlannerNode(Node):
                 self.battery_refused=self.goal.goal_id
                 self.fail(*verdict)
                 return
-            self.path = path
+            self.path = selected_path
             self.last_no_path_goal = None
             self.last_no_path_emit_at = None
+            self.last_no_path_signature = None
             self.publish_path()
             if self.path:self.emit('path_ready')
             else:self.emit('pathfinding_failed','The route intersects a denied zone')
         else:
+            retained = self.retain_safe_path(start, blocked)
+            if retained:
+                self.path = retained
+                self.last_no_path_goal = None
+                self.last_no_path_emit_at = None
+                self.publish_path()
+                self.emit('path_ready')
+                return
             # Keep the original goal active while the map changes or obstacle
             # recovery moves the robot to a better planning position.
             self.path=[]
@@ -448,12 +562,13 @@ class GlobalPlannerNode(Node):
                     goal_point=[float(self.goal.x),float(self.goal.y)])
                 self.last_no_path_goal=self.goal.goal_id
                 self.last_no_path_emit_at=now_seconds
+            self.last_no_path_signature = route_input_signature
 
     def relax_start(self,blocked,start,zone_clearance):
         """Free the inflation-only cells within ``start_escape_radius_m`` of the robot."""
         radius=float(self.get_parameter('start_escape_radius_m').value)
         if radius<=0:return blocked
-        hard=self.grid.inflated_obstacles(float(self.get_parameter('start_escape_hard_margin_m').value))
+        hard=self._inflated_obstacles_cached(float(self.get_parameter('start_escape_hard_margin_m').value))
         if hard[start[1],start[0]]:return blocked           # really touching an obstacle: do not guess
         if self.zones and zone_mask(self.grid,self.zones,zone_clearance)[start[1],start[0]]:return blocked
         zones=zone_mask(self.grid,self.zones,zone_clearance) if self.zones else None
