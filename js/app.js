@@ -5,7 +5,7 @@ import { GridRenderer } from "./grid-renderer.js?v=delivery-v8";
 import { ThreeDRenderer } from "./three-renderer.js?v=delivery-v8";
 import { MapExporter, readPNGMetadata, validateBundle, validateNavigation } from "./map-exporter.js?v=delivery-v8";
 import { createNavigationFeatures } from "./navigation-features.js?v=delivery-v8";
-import { UIController } from "./ui-controller.js?v=battery-v3";
+import { UIController } from "./ui-controller.js?v=battery-v4";
 
 const $ = UIController.$;
 let MAX_LINEAR = 0.50;
@@ -430,7 +430,8 @@ function installUI() {
   $("batteryTestSoc").oninput = event => {
     $("batteryTestValue").textContent = `${Number(event.target.value).toFixed(0)} %`;
   };
-  $("applyBatteryTest").onclick = () => {
+  const applyBatteryTest = () => {
+    if (batteryPendingRequest) return;
     const soc = Number($("batteryTestSoc").value);
     const requestId = window.crypto?.randomUUID?.() || `battery-${Date.now()}`;
     if (sendCommand({ type: "set_battery", soc_pct: soc, request_id: requestId })) {
@@ -442,8 +443,10 @@ function installUI() {
         clearBatteryPendingRequest();
         UIController.batteryTestError("Le robot n’a pas confirmé la nouvelle charge. Vérifiez la simulation puis réessayez.");
       }, 5000);
-    }
+    } else UIController.batteryTestError("Charge non appliquée : vérifiez la connexion au simulateur.");
   };
+  $("batteryTestSoc").onchange = applyBatteryTest;
+  $("applyBatteryTest").onclick = applyBatteryTest;
 
   $("arrivalForm").onsubmit = event => {
     event.preventDefault();

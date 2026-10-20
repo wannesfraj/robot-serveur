@@ -1,6 +1,7 @@
 export const UIController = (() => {
   const $ = id => document.getElementById(id);
   let batteryTestInitialized = false;
+  let batteryActualSoc = null;
   let batteryTestPendingPct = null;
   let batteryTestPendingRequestId = null;
   let batteryControlsBusy = false;
@@ -105,6 +106,7 @@ export const UIController = (() => {
     updateBatteryIndicator(battery);
     if (!battery || !Number.isFinite(Number(battery.soc_pct))) return;
     const soc = Math.max(0, Math.min(100, Number(battery.soc_pct)));
+    batteryActualSoc = soc;
     const reserve = Number(battery.config?.reserve_pct ?? 15);
     const note = $("batteryNote");
     if (soc < reserve) {
@@ -194,8 +196,12 @@ export const UIController = (() => {
     batteryTestPendingRequestId = null;
     $("batteryTestStatus").textContent = reason || "Impossible d’appliquer la charge de test.";
     $("batteryTestStatus").className = "warn";
-    $("batteryTestSoc").disabled = false;
-    $("applyBatteryTest").disabled = false;
+    if (batteryActualSoc !== null) {
+      $("batteryTestSoc").value = String(Math.round(batteryActualSoc));
+      $("batteryTestValue").textContent = `${$("batteryTestSoc").value} %`;
+    }
+    $("batteryTestSoc").disabled = batteryControlsBusy;
+    $("applyBatteryTest").disabled = batteryControlsBusy;
   }
 
   function setScanning(scanning) {

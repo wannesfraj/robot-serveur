@@ -73,8 +73,8 @@ button:disabled{opacity:.45;cursor:default}.feature-fields label{display:block;f
 <div id="batteryTest" hidden>
 <label for="batteryTestSoc"><span>Charge pour les essais (simulation)</span><b id="batteryTestValue">100 %</b></label>
 <input id="batteryTestSoc" type="range" min="0" max="100" step="1" value="100" aria-describedby="batteryTestStatus">
-<button id="applyBatteryTest" type="button">Appliquer la charge de test</button>
-<div id="batteryTestStatus" role="status" aria-live="polite">Régler la charge avant de lancer une mission.</div>
+<button id="applyBatteryTest" type="button">Appliquer ou réessayer la charge</button>
+<div id="batteryTestStatus" role="status" aria-live="polite">La charge s’applique au relâchement du curseur.</div>
 <div id="batteryEstimate" role="status" aria-live="polite"></div>
 </div>
 </div>
@@ -202,7 +202,7 @@ Packets <span id="packets">0</span>
 </script>
 
 <script type="module">
-import "./js/app.js?v=battery-v3";
+import "./js/app.js?v=battery-v4";
 </script>
 </body>
 </html>
